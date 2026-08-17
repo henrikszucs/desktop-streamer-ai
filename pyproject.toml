@@ -1,0 +1,13 @@
+[project]
+name = "desktop-streamer"
+version = "0.1.0"
+requires-python = "==3.14.*"
+dependencies = [
+    "numpy",
+    "torch",
+    "torchaudio",
+]
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
