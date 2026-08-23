@@ -1,11 +1,16 @@
 [project]
 name = "desktop-streamer"
-version = "0.1.0"
+version = "1.0.0"
 requires-python = "==3.14.*"
 dependencies = [
-    "numpy",
-    "torch",
-    "torchaudio",
+    "ipykernel==7.3.0",
+    "numpy==2.5.2",
+    "pandas==3.0.5",
+    "matplotlib==3.11.1",
+    "seaborn==0.13.2",
+    "torch==2.13.0",
+    "torchaudio==2.11.0",
+    "pillow==12.3.0",
 ]
 [[tool.uv.index]]
 name = "pytorch-cu132"
