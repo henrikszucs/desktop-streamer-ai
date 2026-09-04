@@ -11,6 +11,9 @@ dependencies = [
     "torch==2.13.0",
     "torchaudio==2.11.0",
     "pillow==12.3.0",
+    "onnx>=1.22.0",
+    "onnxruntime>=1.29.0",
+    "fastapi[standard]>=0.141.1",
 ]
 [[tool.uv.index]]
 name = "pytorch-cu132"

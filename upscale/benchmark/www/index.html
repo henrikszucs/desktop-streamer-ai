@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Upscale model speed benchmark</title>
+    <link rel="stylesheet" href="index.css">
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/ort.all.min.js"
+            crossorigin="anonymous"></script>
+</head>
+<body>
+    <h1>Upscale model speed benchmark</h1>
+    <p class="lead">
+        One tile through the model, timed. Speed only &mdash; nothing here looks at the
+        picture. Each model comes from the notebook of the same name, published into
+        <code>models/</code> by its own export cell.
+    </p>
+
+    <section class="controls">
+        <label>
+            Model
+            <select id="model"><option value="">loading&hellip;</option></select>
+        </label>
+        <label>
+            Backend
+            <select id="backend">
+                <option value="auto">auto (WebGPU, else WASM)</option>
+                <option value="webgpu">WebGPU</option>
+                <option value="wasm">WASM</option>
+            </select>
+        </label>
+        <label>
+            Data
+            <select id="data">
+                <option value="auto">GPU-resident (WebGPU)</option>
+                <option value="cpu">CPU round trip</option>
+            </select>
+        </label>
+        <label>
+            Seconds
+            <input id="seconds" type="number" value="3" min="1" max="30" step="1">
+        </label>
+        <button id="run" disabled>Run benchmark</button>
+        <button id="clear" class="secondary">Clear</button>
+    </section>
+
+    <p id="detail" class="detail"></p>
+    <p id="status" class="status"></p>
+
+    <table id="results" hidden>
+        <thead>
+            <tr>
+                <th>Model</th>
+                <th>Backend</th>
+                <th>Data</th>
+                <th class="number">ms / tile</th>
+                <th class="number">median</th>
+                <th class="number">tiles / s</th>
+                <th class="number">1080p frame</th>
+                <th class="number">fps</th>
+                <th class="number">runs</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <p class="footnote">
+        <strong>ms / tile</strong> is the fastest run, <strong>median</strong> the middle one;
+        the gap between them is how noisy the machine is. <strong>1080p frame</strong> is the
+        median multiplied by the 40 tiles a 1920&times;1080 output takes at a 128 pixel step,
+        which assumes the tiles cost the same and that nothing else happens between them
+        &mdash; it is a floor, not a frame rate.
+    </p>
+
+    <p class="footnote">
+        <strong>Data</strong> is where the tile lives while the model runs.
+        <em>GPU-resident</em> uploads it once and leaves the result in GPU memory, so the
+        number is the model. <em>CPU round trip</em> hands the runtime a JS array and reads
+        the result back every run &mdash; 209 KB up and 836 KB down through a queue fence
+        for a 132 tile, the same cost whatever the graph does. Run the two back to back and
+        the difference is the copy: it is large enough to make a one-node
+        <code>Resize</code> and a convolution stack report the same time, which is a
+        measurement of the bus, not of the models.
+    </p>
+
+    <script src="index.js"></script>
+</body>
+</html>
