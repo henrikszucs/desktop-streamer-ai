@@ -55,6 +55,14 @@ TYPES = {
 for suffix, media_type in TYPES.items():
     mimetypes.add_type(media_type, suffix)
 
+# What the page can allocate an input tensor for. A graph whose input is some other type
+# is listed by nothing here - it would load and then be fed the wrong bytes.
+DTYPES = {
+    onnx.TensorProto.FLOAT: "float32",
+    onnx.TensorProto.FLOAT16: "float16",
+    onnx.TensorProto.UINT8: "uint8",
+}
+
 # upscale_static_bicubic_tile128.onnx -> id "static-bicubic", step 128.
 NAME = re.compile(r"^(?:upscale_)?(?P<id>.+?)(?:_tile(?P<step>\d+))?$")
 
@@ -81,6 +89,12 @@ def read_model(path):
 
     shape_in = dimensions(graph.input[0])
     shape_out = dimensions(graph.output[0])
+    elem_type = graph.input[0].type.tensor_type.elem_type
+    if elem_type not in DTYPES:
+        # The page fills the input itself, so an element type it cannot allocate is not
+        # something it can benchmark - say which, rather than serving a row that fails.
+        raise ValueError(f"input element type {onnx.TensorProto.DataType.Name(elem_type)} "
+                         f"is not one the page can allocate")
     if None in shape_in or len(shape_in) != 4:
         # The page allocates its input tensor from this shape, so a graph that does not
         # state one is not something it can run.
@@ -108,6 +122,10 @@ def read_model(path):
         "file": path.name,
         "input": shape_in,
         "output": [shape_in[0], shape_in[1], shape_in[2] * scale, shape_in[3] * scale],
+        # Read out of the graph rather than out of the filename: a half-precision export
+        # is the same model at another precision, and the page allocates from this.
+        "dtype": DTYPES[elem_type],
+        "precision": metadata.get("precision", DTYPES[elem_type]),
         "scale": scale,
         "step": step,
         # The halo is whatever the model input carries beyond the step it contributes,
@@ -189,8 +207,8 @@ def main():
     if found:
         print(f"{len(found)} model(s) in {MODELS}")
         for row in found:
-            print(f"  {row['id']:<16} {row['input'][2]:>3} in   halo {row['halo']}   "
-                  f"{row['kb']:>7.1f} KB")
+            print(f"  {row['id']:<28} {row['input'][2]:>3} in   halo {row['halo']}   "
+                  f"{row['precision']:<8} {row['kb']:>7.1f} KB")
     else:
         print(f"warning: no models in {MODELS} - run the export cell of a model notebook "
               f"to publish one, or the page will load with an empty list")

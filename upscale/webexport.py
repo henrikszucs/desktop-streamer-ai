@@ -17,12 +17,18 @@ Usage, from a notebook whose working directory is `model/upscale`:
     info = webexport.export(model, "upscale_name_tile128.onnx", size, label="name", halo=4)
     ...                                          # measure it through onnxruntime
     webexport.annotate(info, cpu_ms=4.2)
+
+The same graph at a lower precision is another candidate rather than another model, and
+`to_float16` and `to_int8` write one from an export that already exists. The page reads
+the input's element type out of the graph, so a half-precision model needs nothing said
+about it anywhere else.
 """
 
 # internal
 from pathlib import Path
 
 # third-party
+import numpy as np
 import onnx
 import torch
 
@@ -75,12 +81,82 @@ def export(model, filename, size, label=None, halo=None, step=TILE_STEP, dynamic
     write_metadata(path, {"label": label, "step": step,
                           "halo": (size - step) // 2 if halo is None else halo})
 
+    return describe(path)
+
+
+def describe(path):
+    """What a written graph costs and what it is made of, read back out of the file."""
     ops = {}
     for node in onnx.load(str(path)).graph.node:
         ops[node.op_type] = ops.get(node.op_type, 0) + 1
 
     return {"path": path, "kb": round(path.stat().st_size / 1024, 1), "ops": ops,
             "outside_budget": sorted(set(ops) - BUDGET)}
+
+
+def to_float16(info, filename, models_dir=MODELS_DIR):
+    """Half precision, weights and I/O both.
+
+    `keep_io_types=False` is the point: leaving the input float32 would add a Cast around
+    the whole graph and keep the tile four bytes a channel on the way in, which is the
+    upload this is meant to halve. The page allocates from the graph's own input type, so
+    a half-precision model needs nothing told to it.
+    """
+    from onnxruntime.transformers import float16
+
+    source = onnx.load(str(info["path"]))
+    target = models_dir / filename
+    onnx.save(float16.convert_float_to_float16(source, keep_io_types=False), str(target))
+
+    metadata = {entry.key: entry.value for entry in source.metadata_props}
+    write_metadata(target, {**metadata, "cpu_ms": None, "precision": "float16"})
+    return describe(target)
+
+
+def to_int8(info, filename, calibration, models_dir=MODELS_DIR):
+    """Static QDQ int8, calibrated on `calibration` - real LR tiles as float arrays.
+
+    Static rather than dynamic: dynamic quantization measures every activation's range at
+    run time, which is a reduction over the tensor before each convolution can start, and
+    on a tile this small that costs more than the convolution saves. Calibrating once on
+    real patches puts the ranges in the graph as constants instead.
+
+    The Q/DQ pairs it inserts are outside the op budget, which `describe` reports: this is
+    a candidate to measure, not an assumption that smaller is faster.
+    """
+    from onnxruntime.quantization import (CalibrationDataReader, CalibrationMethod,
+                                          QuantFormat, QuantType, quantize_static)
+    from onnxruntime.quantization.shape_inference import quant_pre_process
+
+    class Reader(CalibrationDataReader):
+        def __init__(self, tiles):
+            self.tiles = [{"input": tile.astype(np.float32)} for tile in tiles]
+            self.index = 0
+
+        def get_next(self):
+            if self.index >= len(self.tiles):
+                return None
+            self.index += 1
+            return self.tiles[self.index - 1]
+
+        def rewind(self):
+            self.index = 0
+
+    source = onnx.load(str(info["path"]))
+    target = models_dir / filename
+    prepared = target.with_suffix(".prepared.onnx")
+    quant_pre_process(str(info["path"]), str(prepared), skip_symbolic_shape=True)
+    try:
+        quantize_static(str(prepared), str(target), Reader(calibration),
+                        quant_format=QuantFormat.QDQ, per_channel=True,
+                        activation_type=QuantType.QUInt8, weight_type=QuantType.QInt8,
+                        calibrate_method=CalibrationMethod.MinMax)
+    finally:
+        prepared.unlink(missing_ok=True)
+
+    metadata = {entry.key: entry.value for entry in source.metadata_props}
+    write_metadata(target, {**metadata, "cpu_ms": None, "precision": "int8"})
+    return describe(target)
 
 
 def annotate(info, **fields):
