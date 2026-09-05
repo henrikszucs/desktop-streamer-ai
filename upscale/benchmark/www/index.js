@@ -23,6 +23,13 @@ const MIN_CHUNK = 4;
 const MAX_CHUNK = 5000;
 const MIN_SAMPLES = 3;
 const MAX_SAMPLES = 500;
+// Runs in the profiled pass. It only has to be enough for the per-kernel records to
+// average out; it is not a sample, and it is not timed by any clock on this page.
+const PROFILE_RUNS = 20;
+// How long to keep listening after the profiled runs are settled. ORT reads its query
+// buffer back through mapAsync, so the last records arrive some way after the work does,
+// and stopping collection the moment the queue drains throws them away.
+const PROFILE_DRAIN_MS = 100;
 
 const elements = {
     model: document.getElementById("model"),
@@ -48,6 +55,26 @@ let catalogue = null;
 // with the session and keeping them for its lifetime is also what a client would do:
 // one session, one input tile, one output, reused for every frame.
 const contexts = new Map();
+
+// Filled by ORT during a profiled pass, read by profileGpu. Module-level because the
+// callback is installed once, at load, and has to outlive any one measurement.
+let profileTotal = 0;
+let profileRecords = 0;
+let profileCollecting = false;
+
+const onProfilingData = function(data) {
+    if (!profileCollecting) {
+        return;
+    }
+    // Nanoseconds, one record per kernel. Some builds hand the timestamps over as BigInt,
+    // which is why they are put through Number() rather than subtracted as they arrive.
+    const start = Number(data["startTime"]);
+    const end = Number(data["endTime"]);
+    if (Number.isFinite(start) && Number.isFinite(end) && end >= start) {
+        profileTotal += end - start;
+        profileRecords += 1;
+    }
+};
 
 const setStatus = function(text, kind) {
     elements.status.textContent = text;
@@ -101,23 +128,6 @@ const getContext = async function(entry, provider, location, capture) {
     }
 };
 
-// Resolved rather than requested. Asking for ["webgpu", "wasm"] lets the runtime fall
-// back silently, and a row that cannot say which backend produced it is not a result.
-const resolveProvider = async function(entry, choice) {
-    if (choice !== "auto") {
-        await getContext(entry, choice, "cpu", false);
-        return choice;
-    }
-    try {
-        await getContext(entry, "webgpu", "cpu", false);
-        return "webgpu";
-    } catch (error) {
-        console.warn("webgpu unavailable, falling back to wasm:", error.message);
-        await getContext(entry, "wasm", "cpu", false);
-        return "wasm";
-    }
-};
-
 // Where the tensors live while the model runs, and the reason this page has the option at
 // all. A WebGPU run fed a CPU array uploads the tile and reads the result back every
 // iteration - for a 132 tile that is 209 KB up and 836 KB down, through a queue fence
@@ -132,7 +142,12 @@ const resolveLocation = function(provider, choice) {
     if (provider !== "webgpu" || choice === "cpu") {
         return "cpu";
     }
-    if (!ort.env.webgpu.device || typeof ort.Tensor.fromGpuBuffer !== "function") {
+    // `ort.env.webgpu.device` would be the stronger check, but it only exists once a
+    // WebGPU session has been created - and the session whose options this decides has
+    // not been created yet. The browser's own API is the part that can be asked first;
+    // whether the runtime can really use it is answered by the session creation that
+    // follows, which falls back to the next backend if it cannot.
+    if (!navigator.gpu || typeof ort.Tensor.fromGpuBuffer !== "function") {
         console.warn("this runtime exposes no GPU buffer API - timing with CPU tensors");
         return "cpu";
     }
@@ -272,8 +287,10 @@ const gpuBuffer = function(device, bytes) {
 // Resolved, like the provider and the location. Graph capture is a WebGPU option and the
 // runtime rejects it unless the whole graph is static and both ends live in GPU memory,
 // so asking for it on WASM or on the round-trip path is a request that cannot be honoured
-// - and a row labelled with a mode that did not run is worse than no row.
-const resolveMode = function(provider, location, choice) {
+// - and a row labelled with a mode that did not run is worse than no row. It takes no
+// provider: only resolveLocation hands out "gpu", and only for WebGPU, so a GPU-resident
+// location is already a WebGPU one and there is nothing left for a provider to rule out.
+const resolveMode = function(location, choice) {
     // Reuse - and so capture, which needs it - only means anything on the GPU path. A
     // preallocated *CPU* output is accepted by this runtime and then not written: the run
     // hands back the very tensor it was given, contents untouched, so the page would time
@@ -284,24 +301,52 @@ const resolveMode = function(provider, location, choice) {
         console.warn("preallocated outputs need GPU-resident tensors - timing plain runs");
         return "plain";
     }
-    if (choice === "capture" && provider !== "webgpu") {
-        console.warn("graph capture is a WebGPU option - reusing only");
-        return "reuse";
-    }
     return choice;
+};
+
+// Backend, tensor location and runtime mode, resolved together - and resolved by building
+// the session the measurement will actually run on.
+//
+// Resolved rather than requested: handing the runtime ["webgpu", "wasm"] lets it fall back
+// silently, and a row that cannot say which backend produced it is not a result. Built
+// rather than probed: a session compiles kernels and puts the weights on the device, so
+// answering "does WebGPU work here" with a session at some other location - which
+// getContext then caches for the life of the page without ever running it - pays for both
+// of those twice for every model.
+const resolveRun = async function(entry, backend, data, runtime) {
+    const providers = backend === "auto" ? ["webgpu", "wasm"] : [backend];
+    for (let i = 0; i < providers.length; i += 1) {
+        const provider = providers[i];
+        const location = resolveLocation(provider, data);
+        const mode = resolveMode(location, runtime);
+        try {
+            await getContext(entry, provider, location, mode === "capture");
+            return { provider: provider, location: location, mode: mode };
+        } catch (error) {
+            // Only "auto" has anywhere to fall back to. An explicit backend that cannot be
+            // created is an error, not something to quietly substitute for.
+            if (i === providers.length - 1) {
+                throw error;
+            }
+            console.warn(`no ${provider} session for this model, falling back to `
+                + `${providers[i + 1]}:`, error.message);
+        }
+    }
 };
 
 // The input, filled once. Both paths write the same random tile; the difference is
 // whether it is a JS array handed over every run, or a buffer already in GPU memory.
 const prepareInput = function(session, entry, location) {
-    const [, channels, height, width] = entry["input"];
+    const dims = entry["input"];
     const dtype = entry["dtype"] || "float32";
-    const data = makeTile(dtype, channels * height * width);
+    // Every dimension, batch included: the tensor is built with the whole shape, so a
+    // tile counted from three of the four is a length the constructor rejects.
+    const data = makeTile(dtype, dims.reduce((total, value) => total * value, 1));
 
     const feeds = {};
     if (location !== "gpu") {
-        feeds[session.inputNames[0]] = new ort.Tensor(dtype, data, entry["input"]);
-        return { feeds: feeds, dispose: function() {} };
+        feeds[session.inputNames[0]] = new ort.Tensor(dtype, data, dims);
+        return { feeds: feeds };
     }
 
     const device = ort.env.webgpu.device;
@@ -310,9 +355,9 @@ const prepareInput = function(session, entry, location) {
 
     feeds[session.inputNames[0]] = ort.Tensor.fromGpuBuffer(buffer, {
         dataType: dtype,
-        dims: entry["input"],
+        dims: dims,
     });
-    return { feeds: feeds, dispose: function() { buffer.destroy(); } };
+    return { feeds: feeds };
 };
 
 // The output, allocated once instead of per run. Left to itself the runtime returns a new
@@ -322,26 +367,35 @@ const prepareInput = function(session, entry, location) {
 // same tensor back as the fetch moves that storage into the setup, and it is also what
 // lets graph capture replay a recorded command buffer: the buffers have to be the ones it
 // recorded.
+//
+// On the GPU path only. A preallocated CPU output is accepted by this runtime and then not
+// written - see resolveMode, which is why no CPU run ever passes one - so off the GPU path
+// there is nothing to preallocate, and an output-sized tile per session would be a tile
+// nothing ever reads.
 const prepareOutput = function(session, entry, location) {
-    const dtype = entry["dtype"] || "float32";
-    const dims = entry["output"];
-    const count = dims.reduce((total, value) => total * value, 1);
-    const fetches = {};
-    const name = session.outputNames[0];
-
     if (location !== "gpu") {
-        fetches[name] = new ort.Tensor(dtype, makeTile(dtype, count), dims);
-        return { fetches: fetches, dtype: dtype, read: async function() {
-            return fetches[name].data;
-        } };
+        return { fetches: null };
     }
 
+    // The type of the *output*, which is not always the type of the input: a graph that
+    // casts on the way out is fed one and hands back the other, and this is what the
+    // buffer is both sized and read as. The server reads it off the graph's own output.
+    const dtype = entry["out_dtype"] || entry["dtype"] || "float32";
+    const dims = entry["output"];
+    const count = dims.reduce((total, value) => total * value, 1);
     const device = ort.env.webgpu.device;
     const bytes = Math.ceil((count * (BYTES[dtype] || 4)) / 16) * 16;
     const buffer = gpuBuffer(device, bytes);
-    fetches[name] = ort.Tensor.fromGpuBuffer(buffer, { dataType: dtype, dims: dims });
-    return { fetches: fetches, dtype: dtype, read: async function() {
-        return new (VIEWS[dtype] || Float32Array)(await readBuffer(device, buffer, bytes));
+    const fetches = {};
+    fetches[session.outputNames[0]] = ort.Tensor.fromGpuBuffer(buffer,
+        { dataType: dtype, dims: dims });
+
+    // `count` elements rather than the whole buffer: it is rounded up to 16 and the
+    // padding is not part of the model's output, so a checksum over it would be diluted
+    // by however much rounding this particular shape happened to need.
+    return { fetches: fetches, read: async function() {
+        return new (VIEWS[dtype] || Float32Array)(await readBuffer(device, buffer, bytes),
+            0, count);
     } };
 };
 
@@ -363,7 +417,57 @@ const describe = function(entry) {
         parts.push(`${entry["cpu_ms"]} ms on the desktop CPU runtime`);
     }
     parts.push(Object.entries(entry["ops"]).map(([op, n]) => `${op}×${n}`).join(", "));
+    if (entry["outside_budget"].length > 0) {
+        parts.push(`outside the budget: ${entry["outside_budget"].join(", ")}`);
+    }
     return parts.join(" · ");
+};
+
+// The model's own time on the GPU, in milliseconds per run - the number a clock around
+// run() cannot produce.
+//
+// ORT flushes its command encoder at the end of every run(), so one queue.submit() sits
+// under every wall-clock measurement whatever the graph does: tens of microseconds,
+// cross-process in Chrome, and unavoidable. Sizing the batch amortises the fence at the end
+// of a batch; nothing amortises a submit that happens once per run. So wall clock reports
+// max(dispatch, kernels), and every model cheaper than the dispatch reports the dispatch
+// instead of itself. That is how three static filters - a single Resize over 0.2 MPixel,
+// which is a few microseconds of bandwidth and no arithmetic at all - came to read within a
+// factor of two of a 178 MMAC convolution stack. They were never being measured.
+//
+// Timestamp queries are written by the GPU either side of each kernel, so they time the
+// kernels and nothing around them. ORT reports one record per kernel; the kernels of a run
+// are dispatched in sequence, so a run's GPU time is their total.
+const profileGpu = async function(once, release, settle, runs) {
+    const profiling = ort.env.webgpu ? ort.env.webgpu.profiling : null;
+    if (!profiling) {
+        return null;
+    }
+    profileTotal = 0;
+    profileRecords = 0;
+    profiling.mode = "default";
+    profileCollecting = true;
+    try {
+        for (let i = 0; i < runs; i += 1) {
+            release(await once());
+        }
+        await settle();
+        await new Promise((resolve) => setTimeout(resolve, PROFILE_DRAIN_MS));
+    } catch (error) {
+        console.warn("gpu profiling failed - reporting wall clock only:", error.message);
+        return null;
+    } finally {
+        profileCollecting = false;
+        profiling.mode = "off";
+    }
+    // No records at all means this adapter has no timestamp-query, or this runtime fixed
+    // its query type when the device was made and will not turn one on now. Either way
+    // there is nothing to report, and a zero would read as an impossibly fast model.
+    if (profileRecords === 0) {
+        console.warn("no timestamp records - this adapter cannot time its own kernels");
+        return null;
+    }
+    return { ms: profileTotal / runs / 1e6, kernels: profileRecords / runs };
 };
 
 const benchmark = async function(entry, provider, location, mode, seconds) {
@@ -450,11 +554,20 @@ const benchmark = async function(entry, provider, location, mode, seconds) {
             Math.round(TARGET_SAMPLE_MS / Math.max(probe, 1e-4))));
 
         const samples = [];
+        // `seconds` bounds the sampling, not the run: the warmup, the checksum read and
+        // the probe are all spent before this clock starts, and MIN_SAMPLES can carry it
+        // past the deadline. It is a budget for the timed part, not a total runtime.
         const deadline = performance.now() + seconds * 1000;
         while (samples.length < MAX_SAMPLES
                 && (samples.length < MIN_SAMPLES || performance.now() < deadline)) {
             samples.push(await timeBatch(chunk));
         }
+
+        // After the wall clock, never during it: the queries are work of their own, and a
+        // sample that carried them would not be the number a client sees.
+        const gpu = provider === "webgpu"
+            ? await profileGpu(once, release, settle, PROFILE_RUNS)
+            : null;
 
         samples.sort((a, b) => a - b);
         const median = samples[Math.floor(samples.length / 2)];
@@ -472,6 +585,8 @@ const benchmark = async function(entry, provider, location, mode, seconds) {
             provider: provider,
             location: location,
             mode: mode,
+            gpuMs: gpu ? gpu["ms"] : null,
+            gpuKernels: gpu ? gpu["kernels"] : null,
             checksum: value,
         };
     } finally {
@@ -488,6 +603,12 @@ const addRow = function(entry, result) {
         result["mode"],
         result["best"].toFixed(3),
         result["median"].toFixed(3),
+        // The model, and then everything the wall clock adds around it - one queue submit
+        // per run, plus whatever the runtime spends in JavaScript getting there. A row
+        // whose dispatch dwarfs its GPU time is a row about this page, not about the model.
+        result["gpuMs"] === null ? "n/a" : result["gpuMs"].toFixed(4),
+        result["gpuMs"] === null ? "n/a"
+            : Math.max(0, result["median"] - result["gpuMs"]).toFixed(3),
         result["tilesPerSecond"].toFixed(0),
         result["frameMs"].toFixed(0) + " ms",
         result["fps"].toFixed(1),
@@ -524,15 +645,18 @@ const run = async function() {
     try {
         // Yield first, so the button repaints as disabled before the thread is taken.
         await new Promise((resolve) => setTimeout(resolve, 0));
-        const provider = await resolveProvider(entry, choice);
-        const location = resolveLocation(provider, elements.data.value);
-        const mode = resolveMode(provider, location, elements.mode.value);
-        const result = await benchmark(entry, provider, location, mode, seconds);
+        const plan = await resolveRun(entry, choice, elements.data.value,
+            elements.mode.value);
+        const result = await benchmark(entry, plan.provider, plan.location, plan.mode,
+            seconds);
         addRow(entry, result);
         setStatus(`${entry["label"]}: ${result["median"].toFixed(3)} ms per tile `
             + `(${result["runs"]} runs in batches of ${result["chunk"]}, `
-            + `${location === "gpu" ? "GPU-resident tensors" : "CPU round trip"}, `
-            + `${mode})`, "ok");
+            + `${plan.location === "gpu" ? "GPU-resident tensors" : "CPU round trip"}, `
+            + `${plan.mode})`
+            + (result["gpuMs"] === null ? ""
+                : ` \u00b7 ${result["gpuMs"].toFixed(4)} ms of that on the GPU, over `
+                    + `${result["gpuKernels"].toFixed(0)} kernels`), "ok");
     } catch (error) {
         console.error(error);
         setStatus(`failed: ${error.message}`, "error");
@@ -543,6 +667,15 @@ const run = async function() {
 
 const load = async function() {
     ort.env.wasm.wasmPaths = WASM_PATH;
+
+    // Installed before any session, and so before any device: ORT asks the adapter for the
+    // timestamp-query feature when it creates the device, and profiling requested after
+    // that can find a device unable to answer. It is left off, because the queries cost
+    // work of their own and the wall clock is taken without them; profileGpu turns it on
+    // for its own pass and off again.
+    if (ort.env.webgpu) {
+        ort.env.webgpu.profiling = { mode: "off", ondata: onProfilingData };
+    }
 
     // The list is built by the server out of the graphs in www/models/ at request time,
     // so reloading the page is enough to pick up a model a notebook has just written.

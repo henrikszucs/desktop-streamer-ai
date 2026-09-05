@@ -3,11 +3,15 @@
 Reconstructing a higher resolution frame from the one the stream delivered, so a client can
 be sent fewer pixels than it displays.
 
-> **Status: a baseline, a first learned model, and one shaped for the browser.** The third
-> one clears the frame budget: **0.19 ms per tile, 7 ms for a 1080p frame** on an NVIDIA
-> Ampere card in Chromium, at **+6.9 dB over bicubic**. All still measured on synthetic
-> frames, so the dB is a number about this dataset and the ms is a number about that card.
-> Nothing in `src/` calls any of it yet.
+> **Status: a baseline, three learned models, and a sweep over six ways of building one.**
+> `upscale_web` clears the frame budget: **0.19 ms per tile, 7 ms for a 1080p frame** on an
+> NVIDIA Ampere card in Chromium, at **+6.9 dB over bicubic**. The measurement has since
+> changed — quality is scored in Y'CbCr with luma weighted six times either chroma channel,
+> because that is the ratio an eye reads them at — and the strategy sweep that uses it found
+> that **the noise floor of this dataset is 0.61 dB**, which is wider than most of the
+> differences anything here has claimed. All still synthetic frames, so the dB is a number
+> about this dataset and the ms is a number about that card. Nothing in `src/` calls any of
+> it yet.
 
 **One notebook is one model.** A notebook owns its architecture, its training, its numbers
 and its export cell, and publishes straight into `benchmark/www/models/` — so a model is
@@ -32,11 +36,24 @@ Run in order, from this folder:
   design decision made against a measurement taken in the browser rather than in torch.
   Trains `WebUpscaler`, publishes it at three precisions and two tile sizes, and carries
   the ladder of what each optimisation cost and bought.
+- `upscale_strategies.ipynb` — **six architectures under one recipe**, scored by the
+  eye-weighted metric: the reference body under two losses, a colour-split network in two
+  variants, a reparameterized one that collapses for export, a recursive one, a dense
+  cascade and a channel-attention gate. It also measures what a difference has to be worth
+  before it is one, which is the most useful thing in it.
+
+`metrics.py` beside them is **how a frame is scored** — Y'CbCr, luma weighted 6:1:1, the
+channels reported apart, SSIM on luma, and the same weighting available as a loss. It is
+shared, and every notebook that measures quality should measure through it; the three
+older ones still report RGB PSNR, so their tables and the newer ones are not comparable
+column for column.
+
 Each model notebook owns its own export cell and writes its `.onnx` into
 `benchmark/www/models/` through `webexport.py`. That is all publishing is: the benchmark
 server lists whatever graphs are in that folder, per request, so there is no manifest for a
-re-export to leave stale. Four models reach the page: the three static filters and the
-bicubic-residual model.
+re-export to leave stale. Twelve graphs reach the page when every notebook has been run:
+the three static filters, the bicubic-residual model, the four `upscale_web` candidates,
+and the two `upscale_strategies` publishes at two precisions each.
 
 `data/`, `checkpoints/` and `benchmark/www/models/` are gitignored. The export cells need
 `onnx` and `onnxruntime`, which are project dependencies.
@@ -239,11 +256,152 @@ The shape ladder, all at 100 epochs on the same data, same seed, same recipe —
 | 24-12 | 29.51 dB | +6.10 | 6,636 | 6,588 |
 | 16-8 | 28.53 dB | +5.12 | 4,152 | 4,116 |
 
+**Read that ladder against 0.61 dB, not against 0.15.** The ±0.15 above came from one pair
+of runs; three runs of one strategy in `upscale_strategies.ipynb` land 0.61 dB apart, which
+covers several of these rungs. The choice of shape survives it — a third of the MACs for
+1.2 dB is a gap four times the noise — but the rows nearest each other were never
+distinguishable.
+
 A third of the MACs of the wide body for 1.2 dB, and it is the point where a 1080p frame
 fits the 60 fps budget with the decode still to pay for. Two shapes that looked promising
 and were not: a depthwise-separable body loses 0.5 dB at the same cost (the pointwise
 mixing it saves is the part that was working), and a strided stem running the body at half
 resolution loses 1 dB for a saving a narrower body buys more cheaply.
+
+## How quality is measured (`metrics.py`)
+
+Every dB above this line is **RGB PSNR**, and every dB below it is not. The instrument
+changed, because the old one was answering about the wrong thing.
+
+RGB PSNR counts a red error, a green error and a brightness error the same. An eye does
+not. Luminance carries the detail it resolves — edges, text, the structure it judges
+sharpness by — and chrominance carries far less, which is why every codec in use throws
+away three quarters of the chroma samples (4:2:0) and nobody notices, and why nobody does
+that to luma. So `metrics.py` converts to Y'CbCr (BT.709, full range), reports the three
+channels apart, and weights them **6:1:1** — the ratio JVET uses, for the same reason.
+
+The demonstration costs one cell. One validation patch, damaged twice with the *same*
+error energy, once in luma and once in chroma:
+
+| | psnr-y | psnr-u | psnr-v | **weighted** | psnr-rgb | ssim-y |
+| --- | --- | --- | --- | --- | --- | --- |
+| luma damaged | 26.09 | 55.89 | 50.77 | **27.34** | 26.12 | 0.562 |
+| chroma damaged | 58.18 | 26.46 | 62.13 | **35.47** | 25.84 | 0.999 |
+
+**RGB PSNR ranks the invisible damage as the worse of the two** (25.84 against 26.12).
+The weighted score puts 8.1 dB between them, in the direction an eye would, and luma SSIM
+agrees at 0.999 against 0.562.
+
+What the module provides, and the distinctions that matter:
+
+- `wpsnr` — weight the **errors** 6:1:1, then take one logarithm. A chroma error counts a
+  sixth of a luma error of the same size: the perceptual claim written as arithmetic, and
+  the number this folder reports.
+- `wpsnr_db` — average the three **dB** figures 6:1:1, which is the published convention.
+  Averaging logarithms is a geometric mean of the errors, so one very accurate channel
+  lifts the whole score: it reads the chroma damage above at 54.71 dB where weighting the
+  errors reads 35.47. Comparability, not the headline.
+- `channel_psnr` / `psnr_y` — the channels apart, because the combined number hides which
+  one moved. `chroma_subsample=2` scores chroma after a 2×2 average, which is how it is
+  actually transmitted.
+- `ssim_y` — structure on luma, standard 11×11 Gaussian window. PSNR rewards blur; an
+  upscaler that hedges between two plausible edges beats one that commits to the wrong
+  one on any pure error metric, and SSIM is the column that does not fall for it.
+- `luma_chroma_l1` — the same weighting as a training loss, so the objective can be made
+  to match the metric. Whether that is worth doing is measured below, and the answer is no.
+- `psnr` — plain RGB, kept so the older tables stay readable.
+
+**The two columns are different measurements and must not be subtracted.** Y carries most
+of the error, so a weighted score sits near the luma score and away from the RGB one: the
+32-16 model reads 31.81 dB weighted and 30.15 dB RGB on the same patches, in the same run.
+
+## Six strategies (`upscale_strategies.ipynb`)
+
+`upscale_web` asked how fast one architecture could be made. This notebook asks whether it
+is the right architecture, and scores every answer with the metric above. Six ideas, eight
+training runs, one recipe — 100 epochs, Adam at 1e-3 on a cosine schedule, the same seed
+before every build, best epoch kept by weighted PSNR — and all of them on `upscale_web`'s
+frame: frozen bicubic skip as a `Conv`, residual at LR, one `DepthToSpace`.
+
+| strategy | weighted | vs bicubic | vs control | psnr-y | ssim-y | params | MACs/LR px |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| bicubic | 24.90 | — | — | 23.81 | 0.877 | 0 | 0 |
+| **reparameterized** | **32.32** | **+7.42** | **+0.51** | 31.50 | 0.946 | 42,564 → 9,696 | 42,408 → **9,636** |
+| 32-16 rgb l1 (control) | 31.81 | +6.91 | — | 30.93 | 0.944 | 9,696 | 9,636 |
+| 32-16 luma l1 | 31.62 | +6.72 | −0.19 | 30.73 | 0.945 | 9,696 | 9,636 |
+| yuv split | 31.48 | +6.59 | −0.32 | 30.57 | 0.941 | 8,288 | 8,216 |
+| dense cascade | 31.46 | +6.56 | −0.35 | 30.56 | 0.942 | 10,424 | 10,374 |
+| yuv split, wide | 31.34 | +6.44 | −0.47 | 30.43 | 0.942 | 9,888 | 9,813 |
+| recursive ×3 | 30.95 | +6.05 | −0.86 | 30.01 | 0.938 | 6,176 | 10,740 |
+| attention (se) | 30.71 | +5.82 | −1.10 | 29.77 | 0.939 | 10,248 | 9,636 |
+
+### The result is the ruler, not the ranking
+
+**The same strategy, trained three times at three seeds, lands 0.61 dB apart** — 31.42,
+31.81, 32.03, nothing changed but the draw. That is the width of a coin toss on this
+split, and it is wider than most of the table:
+
+- **The winner's lead is inside it.** Reparameterization beats the control by 0.51 dB, so
+  it is *unbeaten* rather than proven. It is still the one to take, because what it wins
+  is free: the three branches collapse into the reference model's exact graph — `Conv`×4,
+  `Add`, `DepthToSpace`, verified at 3.0e-07 — so a gain that might be luck costs nothing
+  if it is. Every other strategy asks to be paid for.
+- **Six rows are beaten by more than the noise**, and those are decided: both colour
+  splits, the dense cascade, recursion, attention, and the luma-weighted control all lose
+  to the reference shape by more than a draw.
+
+**This corrects a claim in the section above.** `upscale_web` reads its width ladder to
+±0.15 dB, on the strength of one pair of runs; three runs say the spread is four times
+that. It does not overturn the shape it chose — a third of the MACs for 1.2 dB is still
+the trade it was — but the rungs closest together in that ladder were never
+distinguishable, and neither was the 0.15 dB it attributed to a re-draw.
+
+### What each idea was worth
+
+- **Matching the loss to the metric does nothing measurable.** Luma-weighted L1 lands 0.19
+  dB *below* RGB L1, a third of the noise band. The reason is worth keeping: RGB L1 is
+  already mostly a luma loss. Y is 0.21R + 0.72G + 0.07B and the three channels of a
+  desktop frame move together, so an RGB error is a luma error wearing a hat, and
+  reweighting it 6:1:1 moves the gradient less than it looks like it should. **The metric
+  had to change; the loss did not have to follow.**
+- **Splitting the colour does exactly what it was built to do, and the trade is bad.**
+  Both variants own the chroma columns — 38.92/38.56 dB for the narrow one, 39.16 dB of
+  `psnr-v` for the one whose luma branch sees all three channels, the best chroma in the
+  table — and both give up more luma than that chroma is worth at six to one. A strategy
+  derived from the metric, which the metric then rejects.
+- **Reparameterization is the only free lunch.** 4.4× the arithmetic while training
+  (42,408 MACs/LR px), the reference graph when it runs, because a sum of parallel
+  convolutions is one convolution. The collapse is asserted, not assumed. One detail
+  decides whether it is exact: the expansion's 1×1 carries **no bias**, or the 3×3 after
+  it pads with zeros where the composed kernel would pad with that bias, and the two
+  differ in a one-pixel ring — the same border error tiling would tile.
+- **Attention loses three ways at once.** −1.10 dB, `Sigmoid` and `Mul` outside the WebGPU
+  op budget, and a pooled gate that makes every output pixel depend on the whole tile — so
+  two tilings of one frame disagree and the halo stops being a complete account of the
+  tiling error. The notebook measures that rather than arguing it: its receptive-field
+  probe reports `whole tile` where every other row reports a number.
+- **Recursion is the cheapest to download and the most expensive to run.** 6,176
+  parameters, 10,740 MACs — depth without parameters is the trade a *download* cares about
+  and an inference budget does not, and it lost 0.86 dB here.
+
+### Two bugs the notebook's own checks caught
+
+Both are the kind that ship silently, and both were found by cells that measure a claim
+instead of restating it:
+
+- **A halo probe.** Every architecture declares its halo; the notebook fills a copy's
+  weights with a positive constant and traces one output pixel's gradient back to the
+  input to see how far it really reaches. `recursive` and `dense` declared one pixel short
+  — the tail's 3×3 was not counted — which is exactly the error that tiles with a visible
+  seam.
+- **An op-budget check on every export.** The colour split read its luma channel as
+  `x[:, :1]`, which exports as `Slice`: outside the budget, to save nine multiply-
+  accumulates a pixel. It is a one-row 1×1 convolution now.
+
+Published to the page: the collapsed reparameterized model and the control, at float32 and
+float16 — one graph per architecture, since the top rows are otherwise the same shape twice.
+Both are 0.93–1.07 ms per tile on the desktop CPU runtime, which is a CPU number: `upscale_web`
+has already shown that CPU and WebGPU disagree about which operators are expensive.
 
 ## Tiling geometry
 
@@ -355,14 +513,18 @@ first:
   the check were not running the same thing — fp32 0.4993, fp16 0.4992 (precision), int8
   0.4982 (quantization error), and a model that differs in the first decimal is a bug.
 
-Eight models reach the dropdown, and the tile geometry differs per model because the halo
-does — nearest needs none, bilinear 1, bicubic 2, both networks 4:
+Twelve graphs reach the dropdown, and the tile geometry differs per model because the halo
+does — nearest needs none, bilinear 1, bicubic 2, every network here 4:
 
 | Source | Models | Model input | Halo |
 | --- | --- | --- | --- |
 | `upscale_dummy` | static nearest / bilinear / bicubic | 128 / 130 / 132 | 0 / 1 / 2 |
 | `upscale_nn` | nn bicubic residual | 136 | 4 |
 | `upscale_web` | web 32-16 in fp32 / fp16 / int8, and fp16 at step 256 | 136 / 264 | 4 |
+| `upscale_strategies` | reparameterized (collapsed) and the 32-16 control, fp32 / fp16 | 136 | 4 |
+
+The results table below predates the last two rows, which have not been measured in a
+browser yet.
 
 ### Results — NVIDIA Ampere, Chromium, ms per tile
 
@@ -416,13 +578,14 @@ faster. A precision is not fast or slow on its own; a provider's kernels for it 
 
 ## Where that leaves it
 
-| | Best static | `upscale_nn` | **`upscale_web`** |
-| --- | --- | --- | --- |
-| PSNR, validation patches | 23.62 dB | 24.17 dB (12 epochs) / 31.25 dB (100) | **30.28 dB** |
-| 1080p frame, WebGPU | 2 ms | 18 ms | **7 ms**, or 5 ms at step 256 |
-| 1080p frame, WASM | 831 ms | 1798 ms | 396 ms |
-| parameters | 0 | 26,796 | **9,696** |
-| inside the op budget | no (`Resize`) | no (`Resize`) | **yes** |
+| | Best static | `upscale_nn` | **`upscale_web`** | `upscale_strategies` |
+| --- | --- | --- | --- | --- |
+| PSNR (RGB), validation patches | 23.62 dB | 24.17 dB (12 epochs) / 31.25 dB (100) | **30.28 dB** | 30.15 dB |
+| weighted PSNR, validation patches | — | — | — | **32.32 dB** (best of eight runs) |
+| 1080p frame, WebGPU | 2 ms | 18 ms | **7 ms**, or 5 ms at step 256 | not measured yet |
+| 1080p frame, WASM | 831 ms | 1798 ms | 396 ms | not measured yet |
+| parameters | 0 | 26,796 | **9,696** | **9,696** (42,564 while training) |
+| inside the op budget | no (`Resize`) | no (`Resize`) | **yes** | **yes** |
 
 **The bar is cleared.** It stood as: *beat 23.62 dB inside a frame budget the static filters
 leave almost entirely unspent.* `upscale_web` scores +6.7 dB over the best static method and
@@ -449,8 +612,14 @@ depend on the data at all.
 
 ## Next
 
-- **Re-run `upscale_nn.ipynb` at a real training budget.** Its 12 epochs are 96 optimizer
-  steps, and every quality number attributed to it is a number about that. One constant.
+- **More validation frames.** This is now the binding constraint on everything else: two
+  held-out frames and 76 patches give a 0.61 dB noise floor, and most of the questions
+  worth asking are about differences smaller than that. Nothing else on this list can be
+  answered until it moves.
+- **Re-run `upscale_nn.ipynb` at a real training budget, and re-measure it and
+  `upscale_dummy.ipynb` through `metrics.py`.** Its 12 epochs are 96 optimizer steps, and
+  every quality number attributed to it is a number about that; and both notebooks still
+  report RGB PSNR, so neither can be compared with anything measured since.
 - **Real data, which is now the only thing standing between this and a decision.** Screen
   captures instead of synthetic frames, and a codec round trip in the degradation: a model
   trained on clean bicubic pairs has never seen blocking or ringing, and a +7 dB that comes
@@ -463,7 +632,6 @@ depend on the data at all.
 - The same runtime tables on a GPU for training and for the desktop client. The browser
   side is now measured on real hardware; torch and onnxruntime here are still CPU builds.
 - Tiled inference in the client, so a frame larger than memory can be upscaled.
-- A perceptual metric beside PSNR, which rewards blur.
 - Then a model worth the name, with both baselines kept as the numbers to beat.
 
 Sibling problems: `../frame_gen_intra/summary.md`, `../frame_gen_extra/summary.md`.

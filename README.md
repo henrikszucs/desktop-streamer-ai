@@ -8,7 +8,7 @@ Three problems, one folder each, each with its own `summary.md`:
 
 | Folder | Problem | State |
 | --- | --- | --- |
-| [`upscale/`](upscale/summary.md) | more pixels out than in | a static baseline and one learned model |
+| [`upscale/`](upscale/summary.md) | more pixels out than in | a static baseline, three learned models and a strategy sweep |
 | [`frame_gen_intra/`](frame_gen_intra/summary.md) | interpolate between two frames | not started |
 | [`frame_gen_extra/`](frame_gen_extra/summary.md) | extrapolate past the newest frame | not started |
 
@@ -45,10 +45,16 @@ anything else. Run whichever notebooks you want on the page:
 - `upscale/upscale_dummy.ipynb` — the static baseline: the three filters ONNX can express
   as a `Resize` node, nearest, bilinear and bicubic. The bar a learned model must beat.
 - `upscale/upscale_nn.ipynb` — the bicubic-residual model.
+- `upscale/upscale_web.ipynb` — the same model shaped for the browser, published at three
+  precisions and two tile sizes.
+- `upscale/upscale_strategies.ipynb` — six architectures under one recipe, scored by the
+  eye-weighted metric, publishing the two that win.
 
 `webexport.py` beside them is the export call they share, and the one place the tile step
 and the WebGPU operator budget are written down — `main.py` imports it rather than keeping a
-second copy of either.
+second copy of either. `metrics.py` is the other shared file: **how a frame is scored**, in
+Y'CbCr with luma weighted six times either chroma channel, because that is the ratio an eye
+reads them at. Every notebook that measures quality should be measuring through it.
 
 Almost everything the dropdown shows is read back out of the graph: the input and output
 shapes, the operators, the parameter count, the size on disk, and the halo, which is
@@ -138,6 +144,9 @@ model/
     ├── data_preprocess.ipynb   frames  → LR/HR patch pairs
     ├── upscale_dummy.ipynb     static resampling filters, the bar to beat
     ├── upscale_nn.ipynb        a first PyTorch model (and what not to export)
+    ├── upscale_web.ipynb       the same model, shaped for the browser
+    ├── upscale_strategies.ipynb  six architectures, one recipe, one eye-weighted metric
+    ├── metrics.py              how a frame is scored: Y'CbCr, luma weighted 6:1:1
     ├── webexport.py            the export call, tile step and op budget, shared
     ├── data/                   gitignored — dataset and samples
     ├── checkpoints/            gitignored — trained weights

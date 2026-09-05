@@ -39,13 +39,13 @@
         <label>
             Runtime
             <select id="mode">
-                <option value="plain">plain (new output each run)</option>
-                <option value="reuse">reuse output buffer</option>
                 <option value="capture">graph capture (WebGPU, GPU-resident)</option>
+                <option value="reuse">reuse output buffer</option>
+                <option value="plain">plain (new output each run)</option>
             </select>
         </label>
         <label>
-            Seconds
+            Sample seconds
             <input id="seconds" type="number" value="3" min="1" max="30" step="1">
         </label>
         <button id="run" disabled>Run benchmark</button>
@@ -64,6 +64,8 @@
                 <th>Runtime</th>
                 <th class="number">ms / tile</th>
                 <th class="number">median</th>
+                <th class="number">GPU</th>
+                <th class="number">dispatch</th>
                 <th class="number">tiles / s</th>
                 <th class="number">1080p frame</th>
                 <th class="number">fps</th>
@@ -75,11 +77,26 @@
     </table>
 
     <p class="footnote">
-        <strong>ms / tile</strong> is the fastest run, <strong>median</strong> the middle one;
-        the gap between them is how noisy the machine is. <strong>1080p frame</strong> is the
-        median multiplied by the 40 tiles a 1920&times;1080 output takes at a 128 pixel step,
-        which assumes the tiles cost the same and that nothing else happens between them
-        &mdash; it is a floor, not a frame rate.
+        <strong>ms / tile</strong> is the fastest sample and <strong>median</strong> the
+        middle one, where a sample is a whole batch of runs timed together and divided
+        &mdash; never one run timed, which finishes under the clock&rsquo;s resolution. The
+        gap between the two is how noisy the machine is. <strong>1080p frame</strong> is the
+        median multiplied by the tiles a 1920&times;1080 output takes at the step of the
+        model that produced it, which assumes the tiles cost the same and that nothing else
+        happens between them &mdash; it is a floor, not a frame rate.
+    </p>
+
+    <p class="footnote">
+        <strong>GPU</strong> is the model itself, summed from WebGPU timestamp queries
+        written either side of each kernel, and <strong>dispatch</strong> is everything the
+        wall clock adds around it. They are separate because a clock around
+        <code>run()</code> cannot see below one <code>queue.submit()</code>, which ONNX
+        Runtime issues once per run whatever the graph does &mdash; so any model cheaper
+        than that submit reports the submit instead of itself, and a single
+        <code>Resize</code> over 0.2&nbsp;MPixel is cheaper than it by an order of
+        magnitude. Read <strong>GPU</strong> to compare models and
+        <strong>dispatch</strong> to see what tiling costs you: a client running 40 tiles a
+        frame pays it 40 times. Blank where the adapter cannot time its own kernels.
     </p>
 
     <p class="footnote">

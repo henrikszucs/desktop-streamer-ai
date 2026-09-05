@@ -55,8 +55,9 @@ TYPES = {
 for suffix, media_type in TYPES.items():
     mimetypes.add_type(media_type, suffix)
 
-# What the page can allocate an input tensor for. A graph whose input is some other type
-# is listed by nothing here - it would load and then be fed the wrong bytes.
+# What the page can allocate a tensor for, at either end. A graph whose input is some
+# other type is listed by nothing here - it would load and then be fed the wrong bytes -
+# and one whose output is would have a buffer of the wrong size allocated for it.
 DTYPES = {
     onnx.TensorProto.FLOAT: "float32",
     onnx.TensorProto.FLOAT16: "float16",
@@ -90,11 +91,15 @@ def read_model(path):
     shape_in = dimensions(graph.input[0])
     shape_out = dimensions(graph.output[0])
     elem_type = graph.input[0].type.tensor_type.elem_type
-    if elem_type not in DTYPES:
-        # The page fills the input itself, so an element type it cannot allocate is not
-        # something it can benchmark - say which, rather than serving a row that fails.
-        raise ValueError(f"input element type {onnx.TensorProto.DataType.Name(elem_type)} "
-                         f"is not one the page can allocate")
+    out_elem_type = graph.output[0].type.tensor_type.elem_type
+    for name, value in (("input", elem_type), ("output", out_elem_type)):
+        if value not in DTYPES:
+            # The page fills the input and allocates the output itself, so an element type
+            # it cannot allocate is not something it can benchmark - say which, rather
+            # than serving a row that fails.
+            raise ValueError(f"{name} element type "
+                             f"{onnx.TensorProto.DataType.Name(value)} is not one the "
+                             f"page can allocate")
     if None in shape_in or len(shape_in) != 4:
         # The page allocates its input tensor from this shape, so a graph that does not
         # state one is not something it can run.
@@ -114,17 +119,26 @@ def read_model(path):
     match = NAME.match(path.stem)
     identifier = match.group("id").replace("_", "-")
     step = int(metadata.get("step") or match.group("step") or webexport.TILE_STEP)
-    scale = shape_out[2] // shape_in[2] if shape_out[2] else int(metadata.get("scale", 2))
+
+    # The output geometry is in the graph beside the input geometry, so it is read rather
+    # than multiplied out of the input: a graph that casts on the way out, or that changes
+    # channel count, hands the page a tensor of the size and type it will really be given
+    # instead of one derived from the other end. Only a graph that does not state its
+    # output shape falls back to the scale, which is the one thing that cannot be read.
+    static_out = len(shape_out) == 4 and None not in shape_out
+    scale = shape_out[2] // shape_in[2] if static_out else int(metadata.get("scale", 2))
 
     return {
         "id": identifier,
         "label": metadata.get("label") or identifier.replace("-", " "),
         "file": path.name,
         "input": shape_in,
-        "output": [shape_in[0], shape_in[1], shape_in[2] * scale, shape_in[3] * scale],
+        "output": shape_out if static_out else [shape_in[0], shape_in[1],
+                                                shape_in[2] * scale, shape_in[3] * scale],
         # Read out of the graph rather than out of the filename: a half-precision export
         # is the same model at another precision, and the page allocates from this.
         "dtype": DTYPES[elem_type],
+        "out_dtype": DTYPES[out_elem_type],
         "precision": metadata.get("precision", DTYPES[elem_type]),
         "scale": scale,
         "step": step,
@@ -165,14 +179,18 @@ def list_models():
 
 
 @app.get("/api/models")
-async def models_endpoint():
-    """The dropdown, built from the folder on every request."""
+def models_endpoint():
+    """The dropdown, built from the folder on every request.
+
+    Deliberately not `async`: a cold cache parses every graph in the folder, weights and
+    all, and on the event loop that stalls the static files the page is fetching at the
+    same time. Declared like this, Starlette runs it on the threadpool.
+    """
     models = list_models()
     newest = max((path.stat().st_mtime for path in MODELS.glob("*.onnx")), default=None)
     return JSONResponse({
         "generated": (time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(newest))
                       if newest else None),
-        "step": models[0]["step"] if models else webexport.TILE_STEP,
         "models": models,
     })
 
