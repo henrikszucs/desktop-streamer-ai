@@ -128,6 +128,10 @@ def read_model(path):
     static_out = len(shape_out) == 4 and None not in shape_out
     scale = shape_out[2] // shape_in[2] if static_out else int(metadata.get("scale", 2))
 
+    # The halo is whatever the model input carries beyond the step it contributes, which is
+    # a fact about the exported shape rather than a note about it.
+    halo = int(metadata["halo"]) if "halo" in metadata else (shape_in[2] - step) // 2
+
     return {
         "id": identifier,
         "label": metadata.get("label") or identifier.replace("-", " "),
@@ -142,9 +146,14 @@ def read_model(path):
         "precision": metadata.get("precision", DTYPES[elem_type]),
         "scale": scale,
         "step": step,
-        # The halo is whatever the model input carries beyond the step it contributes,
-        # which is a fact about the exported shape rather than a note about it.
-        "halo": int(metadata["halo"]) if "halo" in metadata else (shape_in[2] - step) // 2,
+        "halo": halo,
+        # What one run of this graph contributes to the output picture, in output pixels:
+        # the input less its halo at both edges, scaled up. Read off the shape in each
+        # dimension separately, because `step` is one number the exporter chose and a graph
+        # need not be square - a whole-frame export covers 1920x1080 in one run where a 128
+        # tile takes forty, and multiplying a tile time by a count derived from `step`
+        # alone would charge the first of those for forty dispatches it never makes.
+        "covers": [(shape_in[3] - 2 * halo) * scale, (shape_in[2] - 2 * halo) * scale],
         "parameters": parameters,
         "kb": round(path.stat().st_size / 1024, 1),
         "ops": ops,

@@ -159,6 +159,64 @@ def to_int8(info, filename, calibration, models_dir=MODELS_DIR):
     return describe(target)
 
 
+def to_frame(info, filename, width=1920, height=1080, models_dir=MODELS_DIR):
+    """The same graph at whole-frame size, so one frame is one run instead of forty.
+
+    Every operator these models use reads its geometry from the tensor it is handed - Conv,
+    Relu, Add, Concat, DepthToSpace, and a Resize driven by scales rather than by a baked
+    output size - so the weights do not change and only the declared input shape moves. The
+    tile is a property of how a model is *run*, not of the model, and the reshaped graph is
+    bit-identical to the tiled one over the region a tile contributes.
+
+    It is worth having because the difference is not small. A tiled frame pays one queue
+    submit per tile, and on an Ampere card that is about 2x on the convolution stacks and
+    5-7x on the resampling filters, which do so little work per tile that the dispatch is
+    most of what a tiled run measures. Tiling earns its keep when only part of the picture
+    changed - a remote desktop\'s dirty region - not when every frame is new.
+
+    A model exported with `dynamic=True` needs none of this; it already takes any size.
+    """
+    source = onnx.load(str(info["path"]))
+    graph = source.graph
+
+    # A Resize pinned to an output size carries the tile in an initializer rather than in
+    # the shape, so moving the declared input would leave the graph disagreeing with
+    # itself. Nothing here exports one, but say so rather than write a broken graph.
+    initializers = {init.name for init in graph.initializer}
+    produced = {out for node in graph.node for out in node.output}
+    for node in graph.node:
+        if node.op_type == "Resize" and len(node.input) >= 4 and node.input[3]:
+            if node.input[3] in initializers or node.input[3] in produced:
+                raise ValueError(f"{node.name or 'Resize'} is pinned to a baked output "
+                                 f"size, so this graph cannot be reshaped")
+
+    metadata = {entry.key: entry.value for entry in source.metadata_props}
+    shape_in = graph.input[0].type.tensor_type.shape
+    shape_out = graph.output[0].type.tensor_type.shape
+    scale = shape_out.dim[2].dim_value // shape_in.dim[2].dim_value
+    step = int(metadata.get("step", TILE_STEP))
+    halo = int(metadata.get("halo", (shape_in.dim[2].dim_value - step) // 2))
+
+    shape_in.dim[2].dim_value = height // scale + 2 * halo
+    shape_in.dim[3].dim_value = width // scale + 2 * halo
+    shape_out.dim[2].dim_value = shape_in.dim[2].dim_value * scale
+    shape_out.dim[3].dim_value = shape_in.dim[3].dim_value * scale
+
+    # Every intermediate shape in the file was inferred for the tile. Drop them and infer
+    # again, rather than leaving a graph whose middle still claims to be tile-sized.
+    del graph.value_info[:]
+    target = models_dir / filename
+    reshaped = onnx.shape_inference.infer_shapes(source, strict_mode=True)
+    onnx.checker.check_model(reshaped)
+    onnx.save(reshaped, str(target))
+
+    label = metadata.get("label", target.stem)
+    write_metadata(target, {**metadata, "cpu_ms": None,
+                            "label": f"{label} \u00b7 whole frame",
+                            "step": width // scale, "halo": halo})
+    return describe(target)
+
+
 def annotate(info, **fields):
     """Add measurements to an exported model, after they have been taken.
 

@@ -4,6 +4,9 @@
 // Nothing here checks the output pixels - only how long a tile takes.
 
 const MODELS_URL = "api/models";
+// The output picture the frame columns are about.
+const FRAME_WIDTH = 1920;
+const FRAME_HEIGHT = 1080;
 const WASM_PATH = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/";
 const WARMUP = 5;
 // A sample is a batch of runs timed together and divided, never one run timed. Two
@@ -136,8 +139,12 @@ const getContext = async function(entry, provider, location, capture) {
 // same number, which is what "a simple resize costs what a whole network costs" actually
 // means. Held on the GPU, the run measures the model.
 //
-// Resolved rather than requested, like the provider: WASM has no GPU buffers, and a
-// runtime build without the buffer API cannot do it either.
+// Resolved rather than chosen, unlike the backend: only WebGPU has a buffer this page can
+// hand a tensor to and keep. WASM has no GPU memory at all, and WebGL has textures it fills
+// and reads back itself and does not expose, so both of them are a round trip whatever is
+// asked for - this is a request the machine refuses on its own terms rather than a choice.
+// Where it is refused the row says "CPU round trip" in its own column, so the number is
+// never mistaken for a GPU-resident one.
 const resolveLocation = function(provider, choice) {
     if (provider !== "webgpu" || choice === "cpu") {
         return "cpu";
@@ -304,34 +311,175 @@ const resolveMode = function(location, choice) {
     return choice;
 };
 
-// Backend, tensor location and runtime mode, resolved together - and resolved by building
-// the session the measurement will actually run on.
+// What a backend cannot be asked for at all, refused before a session is built rather than
+// after.
 //
-// Resolved rather than requested: handing the runtime ["webgpu", "wasm"] lets it fall back
-// silently, and a row that cannot say which backend produced it is not a result. Built
-// rather than probed: a session compiles kernels and puts the weights on the device, so
-// answering "does WebGPU work here" with a session at some other location - which
-// getContext then caches for the life of the page without ever running it - pays for both
-// of those twice for every model.
+// Only the one limit that is certain. The WebGL EP has no float16 tensor type - the refusal
+// comes from the tensor layer rather than from any operator, so no build of it will take a
+// half-precision graph, and finding that out by downloading one and compiling shaders for
+// it is a waste of several seconds. Everything else WebGL turns down is a property of one
+// build of one runtime - a Resize mode it never implemented, a quantized graph it cannot
+// resolve - and those are left to fail with ORT's own message, which names the operator and
+// stays true when the runtime changes. A table of guesses about a backend would not.
+const checkBackend = function(entry, backend) {
+    if (backend === "webgl" && (entry["dtype"] !== "float32"
+            || entry["out_dtype"] !== "float32")) {
+        throw new Error(`the WebGL backend has only float32 tensors, and `
+            + `${entry["label"]} is ${entry["dtype"]} - run it on WebGPU or WASM`);
+    }
+};
+
+// The tensor location and the runtime mode, resolved against the backend the run was asked
+// for - and resolved by building the session the measurement will actually run on.
+//
+// The backend is not among the things resolved. It is chosen, and a choice that cannot be
+// created is an error. There was an "auto" here that tried WebGPU and dropped to WASM when
+// the session would not build, which is a silent change of subject: two rows of the table
+// would be two different runtimes, one of them measured through a fallback nobody asked
+// for, and a benchmark whose backend is decided by whether something threw is not one you
+// can read a comparison out of.
+//
+// Built rather than probed: a session compiles kernels and puts the weights on the device,
+// so answering "can this backend run the model" with a session at some other location -
+// which getContext then caches for the life of the page without ever running it - pays for
+// both of those twice for every model.
 const resolveRun = async function(entry, backend, data, runtime) {
-    const providers = backend === "auto" ? ["webgpu", "wasm"] : [backend];
-    for (let i = 0; i < providers.length; i += 1) {
-        const provider = providers[i];
-        const location = resolveLocation(provider, data);
-        const mode = resolveMode(location, runtime);
+    checkBackend(entry, backend);
+    const location = resolveLocation(backend, data);
+    const mode = resolveMode(location, runtime);
+    await getContext(entry, backend, location, mode === "capture");
+    return { provider: backend, location: location, mode: mode };
+};
+
+// What a backend has been *observed* to turn down, keyed by model and backend, holding the
+// runtime's own words. Not a support table: nothing is entered here that was not either
+// refused by checkBackend's one certain rule or thrown by ORT on this machine, in this
+// browser, for this build. An entry that is absent means unknown, never supported - which
+// is why an unprobed model stays selectable and fails with ORT's message if it cannot run.
+//
+// It exists because two thirds of the models cannot run on WebGL, the list is ordered
+// cheapest-first, and the three cheapest are three it refuses: the page opened on a dead
+// selection and read as a backend that does not work at all.
+const refusals = new Map();
+
+// The other half of the same record: pairs seen to run. A model that has run once is not
+// disabled by a later failure, because that failure is something other than "this backend
+// cannot run this graph" - a lost GPU context, a device gone away - and a transient that
+// took a model out of the list for the life of the page would be worse than the failure.
+const runnable = new Set();
+
+// Keyed by the whole request, not by the backend alone. Data and Runtime are part of what
+// was asked for - a graph capture the runtime rejects says nothing about the same model on
+// a plain run - so a record made under one pair of them must not disable a model under
+// another. The raw choices rather than the resolved ones, because resolving warns when it
+// has to overrule a choice and this is asked once per option per repaint.
+const refusalKey = function(entry, backend) {
+    return [entry["id"], backend, elements.data.value, elements.mode.value].join("|");
+};
+
+// How many models this one backend has been seen to turn down. Counted per backend rather
+// than off the map's size, which holds every backend asked so far.
+const refusedCount = function(backend) {
+    return catalogue["models"].filter(
+        (entry) => refusals.has(refusalKey(entry, backend))).length;
+};
+
+// Everything already known against this pair, without running anything. checkBackend is
+// consulted rather than duplicated: its float16 rule is the one refusal this page makes on
+// its own, and it covers a third of the catalogue for free.
+const knownRefusal = function(entry, backend) {
+    const key = refusalKey(entry, backend);
+    if (runnable.has(key)) {
+        return null;
+    }
+    if (!refusals.has(key)) {
         try {
-            await getContext(entry, provider, location, mode === "capture");
-            return { provider: provider, location: location, mode: mode };
+            checkBackend(entry, backend);
         } catch (error) {
-            // Only "auto" has anywhere to fall back to. An explicit backend that cannot be
-            // created is an error, not something to quietly substitute for.
-            if (i === providers.length - 1) {
-                throw error;
-            }
-            console.warn(`no ${provider} session for this model, falling back to `
-                + `${providers[i + 1]}:`, error.message);
+            refusals.set(key, error.message);
         }
     }
+    return refusals.get(key) || null;
+};
+
+// One run of the model through exactly the path a measurement would take, to find out
+// whether this backend runs it. Its answer is the runtime's, and the session it built is
+// the session the measurement then reuses, so a probe that succeeds is the warmup it
+// would have paid anyway.
+//
+// Cheap in the only case it is asked for in bulk. A refusal throws on the first dispatch
+// of the operator it cannot resolve, before any real work: measured on WebGL here, every
+// refusal came back in 1.8-6.7 ms against 34-1123 ms for a run that succeeds. So walking a
+// list of models a backend cannot run costs almost nothing, and the walk stops at the
+// first one it can.
+const probeBackend = async function(entry, backend) {
+    const known = knownRefusal(entry, backend);
+    if (known !== null) {
+        return known;
+    }
+    try {
+        const plan = await resolveRun(entry, backend, elements.data.value,
+            elements.mode.value);
+        const context = await getContext(entry, plan.provider, plan.location,
+            plan.mode === "capture");
+        const runner = makeRunner(context, plan.location, plan.mode);
+        runner.release(await runner.once());
+        await runner.settle();
+        runnable.add(refusalKey(entry, backend));
+        return null;
+    } catch (error) {
+        refusals.set(refusalKey(entry, backend), error.message);
+        return error.message;
+    }
+};
+
+// The dropdown, showing what has been learned about the backend now selected. A refused
+// model is disabled and says why in its own label, so the reason is on the option rather
+// than in a status line that the next click replaces.
+const markModels = function(backend) {
+    Array.from(elements.model.options).forEach((option) => {
+        const entry = findModel(option.value);
+        if (!entry) {
+            return;
+        }
+        const refusal = knownRefusal(entry, backend);
+        option.disabled = refusal !== null;
+        option.textContent = refusal === null ? entry["label"]
+            : `${entry["label"]} - ${backend} refused: ${refusal}`;
+    });
+};
+
+// Move the selection onto a model this backend has been shown to run, so the first press
+// of Run lands on something that runs. Called whenever the request changes - the backend,
+// the data location or the runtime mode - because any of the three can change the answer.
+const selectRunnable = async function(backend) {
+    markModels(backend);
+
+    // The model already selected is asked about first, and kept only if the backend is
+    // shown to run it. "Not known to be refused" is a weaker claim than "runs", and
+    // treating the two as one is what left the page opening on a model WebGL cannot run:
+    // nothing is known about any model until something has asked.
+    const current = findModel(elements.model.value);
+    const order = current
+        ? [current].concat(catalogue["models"].filter((entry) => entry !== current))
+        : catalogue["models"];
+
+    for (const entry of order) {
+        setStatus(`asking ${backend} what it can run - ${entry["label"]}…`, "busy");
+        const refusal = await probeBackend(entry, backend);
+        markModels(backend);
+        if (refusal === null) {
+            elements.model.value = entry["id"];
+            elements.detail.textContent = describe(entry);
+            const refused = refusedCount(backend);
+            setStatus(`${backend} runs ${entry["label"]}`
+                + (refused > 0 ? ` · ${refused} model(s) it refused are disabled above, `
+                    + `with its reason on each` : ""));
+            return;
+        }
+    }
+    setStatus(`${backend} refused every model in the list - see the reason on each`,
+        "error");
 };
 
 // The input, filled once. Both paths write the same random tile; the difference is
@@ -404,7 +552,7 @@ const describe = function(entry) {
     const parts = [
         entry["precision"] || entry["dtype"],
         `${width}×${height} in, ${width * entry["scale"]}×${height * entry["scale"]} out`,
-        `keeps ${entry["step"] * entry["scale"]}×${entry["step"] * entry["scale"]}`,
+        `keeps ${entry["covers"][0]}×${entry["covers"][1]}`,
         `${entry["kb"]} KB`,
     ];
     if (entry["halo"] !== null) {
@@ -470,13 +618,11 @@ const profileGpu = async function(once, release, settle, runs) {
     return { ms: profileTotal / runs / 1e6, kernels: profileRecords / runs };
 };
 
-const benchmark = async function(entry, provider, location, mode, seconds) {
-    const capture = mode === "capture";
-    const reuse = capture || mode === "reuse";
-    const context = await getContext(entry, provider, location, capture);
-    const session = context.session;
-    const input = context.input;
-    const output = context.output;
+// The three primitives a run is made of, over one context. Shared with the probe below
+// rather than written twice: a probe issuing a different run from the one it clears the
+// way for would be answering about some other run than the measurement's.
+const makeRunner = function(context, location, mode) {
+    const reuse = mode === "capture" || mode === "reuse";
     const device = location === "gpu" ? ort.env.webgpu.device : null;
 
     // An output the runtime allocated has to be handed back, or a GPU-resident run leaks
@@ -491,7 +637,9 @@ const benchmark = async function(entry, provider, location, mode, seconds) {
 
     // One run, either way round: the fetch is handed in when the output is the page's.
     const once = function() {
-        return reuse ? session.run(input.feeds, output.fetches) : session.run(input.feeds);
+        return reuse
+            ? context.session.run(context.input.feeds, context.output.fetches)
+            : context.session.run(context.input.feeds);
     };
 
     // With nothing read back, run() resolves once the work is *submitted*, not once it is
@@ -503,6 +651,20 @@ const benchmark = async function(entry, provider, location, mode, seconds) {
             await device.queue.onSubmittedWorkDone();
         }
     };
+
+    return { release: release, once: once, settle: settle };
+};
+
+const benchmark = async function(entry, provider, location, mode, seconds) {
+    const capture = mode === "capture";
+    const reuse = capture || mode === "reuse";
+    const context = await getContext(entry, provider, location, capture);
+    const session = context.session;
+    const output = context.output;
+    const runner = makeRunner(context, location, mode);
+    const release = runner.release;
+    const once = runner.once;
+    const settle = runner.settle;
 
     // One batch of `count` runs, settled once at the end, as milliseconds per run.
     const timeBatch = async function(count) {
@@ -571,8 +733,11 @@ const benchmark = async function(entry, provider, location, mode, seconds) {
 
         samples.sort((a, b) => a - b);
         const median = samples[Math.floor(samples.length / 2)];
-        const tilesPerFrame = Math.ceil(1080 / (entry["step"] * entry["scale"]))
-            * Math.ceil(1920 / (entry["step"] * entry["scale"]));
+        // How many runs one frame takes, from what a single run covers in each dimension
+        // rather than from a square tile assumed out of `step`.
+        const covers = entry["covers"];
+        const tilesPerFrame = Math.ceil(FRAME_WIDTH / covers[0])
+            * Math.ceil(FRAME_HEIGHT / covers[1]);
 
         return {
             best: samples[0],
@@ -580,6 +745,7 @@ const benchmark = async function(entry, provider, location, mode, seconds) {
             chunk: chunk,
             runs: samples.length * chunk,
             tilesPerSecond: 1000 / median,
+            tilesPerFrame: tilesPerFrame,
             frameMs: median * tilesPerFrame,
             fps: 1000 / (median * tilesPerFrame),
             provider: provider,
@@ -610,7 +776,8 @@ const addRow = function(entry, result) {
         result["gpuMs"] === null ? "n/a"
             : Math.max(0, result["median"] - result["gpuMs"]).toFixed(3),
         result["tilesPerSecond"].toFixed(0),
-        result["frameMs"].toFixed(0) + " ms",
+        String(result["tilesPerFrame"]),
+        result["frameMs"].toFixed(1) + " ms",
         result["fps"].toFixed(1),
         String(result["runs"]),
         result["checksum"].toFixed(4),
@@ -649,6 +816,7 @@ const run = async function() {
             elements.mode.value);
         const result = await benchmark(entry, plan.provider, plan.location, plan.mode,
             seconds);
+        runnable.add(refusalKey(entry, choice));
         addRow(entry, result);
         setStatus(`${entry["label"]}: ${result["median"].toFixed(3)} ms per tile `
             + `(${result["runs"]} runs in batches of ${result["chunk"]}, `
@@ -659,6 +827,14 @@ const run = async function() {
                     + `${result["gpuKernels"].toFixed(0)} kernels`), "ok");
     } catch (error) {
         console.error(error);
+        // A backend that turned this model down has just said so in its own words, which
+        // is the same answer a probe would have got - so record it, and let the dropdown
+        // show it rather than making the next press find out again. Not for a pair that
+        // has already run: see `runnable`.
+        if (!runnable.has(refusalKey(entry, choice))) {
+            refusals.set(refusalKey(entry, choice), error.message);
+            markModels(choice);
+        }
         setStatus(`failed: ${error.message}`, "error");
     } finally {
         elements.run.disabled = false;
@@ -705,7 +881,33 @@ const load = async function() {
     setStatus(`${catalogue["models"].length} models, newest written `
         + `${catalogue["generated"]}`
         + (navigator.gpu ? " · WebGPU available" : " · no WebGPU in this browser"));
+
+    // The list is ordered cheapest-first and the cheapest models are single resampling
+    // nodes, which is exactly what a backend is most likely to lack - so the opening
+    // selection is settled by asking the chosen backend, not by taking the first row.
+    await backendChanged();
 };
+
+// One place the selection is settled from, so a backend change and the opening load agree.
+const backendChanged = async function() {
+    elements.run.disabled = true;
+    try {
+        await selectRunnable(elements.backend.value);
+    } finally {
+        elements.run.disabled = false;
+    }
+};
+
+// Data and Runtime are part of what was asked for, so a change to either can change what
+// runs - the selection is settled again from the same place the backend settles it.
+[elements.backend, elements.data, elements.mode].forEach((element) => {
+    element.addEventListener("change", () => {
+        backendChanged().catch((error) => {
+            console.error(error);
+            setStatus(error.message, "error");
+        });
+    });
+});
 
 elements.model.addEventListener("change", () => {
     elements.detail.textContent = describe(findModel(elements.model.value));

@@ -24,15 +24,15 @@
         <label>
             Backend
             <select id="backend">
-                <option value="auto">auto (WebGPU, else WASM)</option>
                 <option value="webgpu">WebGPU</option>
+                <option value="webgl">WebGL</option>
                 <option value="wasm">WASM</option>
             </select>
         </label>
         <label>
             Data
             <select id="data">
-                <option value="auto">GPU-resident (WebGPU)</option>
+                <option value="gpu">GPU-resident (WebGPU)</option>
                 <option value="cpu">CPU round trip</option>
             </select>
         </label>
@@ -67,6 +67,7 @@
                 <th class="number">GPU</th>
                 <th class="number">dispatch</th>
                 <th class="number">tiles / s</th>
+                <th class="number">runs / frame</th>
                 <th class="number">1080p frame</th>
                 <th class="number">fps</th>
                 <th class="number">runs</th>
@@ -84,6 +85,26 @@
         median multiplied by the tiles a 1920&times;1080 output takes at the step of the
         model that produced it, which assumes the tiles cost the same and that nothing else
         happens between them &mdash; it is a floor, not a frame rate.
+    </p>
+
+    <p class="footnote">
+        <strong>Backend</strong> is stated, never chosen for you, and a backend that cannot
+        run the model fails the run instead of quietly substituting another &mdash; two rows
+        produced by two different runtimes are not a comparison. Only <em>WebGPU</em> can
+        hold tensors in GPU memory or record a command buffer, so <em>WebGL</em> and
+        <em>WASM</em> always read as a CPU round trip with plain runs, and only WebGPU can
+        report a <strong>GPU</strong> time. Changing it settles the <strong>Model</strong>
+        selection by <em>asking</em> that backend: it runs each model once, cheapest first,
+        until one goes through, and that one is selected. A refusal costs almost nothing
+        &mdash; the runtime throws on the first dispatch of the operator it lacks, in single
+        milliseconds against tens or hundreds for a run that works &mdash; so the walk is
+        paid for by the model it stops on, whose session the first benchmark then reuses as
+        its warmup. Every model refused along the way is disabled in the list with the
+        runtime&rsquo;s own words on it. Nothing is predicted: a model nothing has asked
+        about yet stays selectable, and fails with ORT&rsquo;s message if it cannot run,
+        which is then remembered too. <em>WebGL</em> additionally has float32 tensors
+        only, and its operator coverage is partial &mdash; a graph it cannot run says so,
+        naming the operator.
     </p>
 
     <p class="footnote">
