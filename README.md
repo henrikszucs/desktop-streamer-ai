@@ -49,6 +49,9 @@ anything else. Run whichever notebooks you want on the page:
   precisions and two tile sizes.
 - `upscale/upscale_strategies.ipynb` — six architectures under one recipe, scored by the
   eye-weighted metric, publishing the two that win.
+- `upscale/upscale_geometry.ipynb` — not a model: the *shape* one runs at. Sweeps tile size,
+  batch and scale factor, charges everything in nanoseconds per output pixel, and publishes
+  a family of geometries for the page to measure on whatever GPU is in front of it.
 
 `webexport.py` beside them is the export call they share, and the one place the tile step
 and the WebGPU operator budget are written down — `main.py` imports it rather than keeping a
@@ -125,9 +128,14 @@ Three things it deliberately does:
   say which backend produced it is not a result — so *auto* tries WebGPU alone first and
   reports what it got. The data column resolves the same way: WASM has no GPU buffers.
 
-The `1080p frame` column is the median multiplied by the 40 tiles a 1920×1080 output takes
-at a 128 pixel step. It assumes every tile costs the same and that nothing happens between
-them: a floor, not a frame rate.
+Everything is charged per output pixel and there is no frames-per-second column: a run is a
+tile, so a rate of runs prices the geometry a graph was exported at rather than the model in
+it, and two tile sizes cannot be compared by it. `ns / kept px` is a run over the output
+pixels it keeps; `ns / frame px` is the same with the tiling put back, including whatever a
+step computes off the edge of a 1920×1080 frame. The two are equal only for a geometry that
+tiles the frame exactly. `runs / frame` divides by the batch the graph was exported at, and
+`1080p frame` assumes every run costs the same and that nothing happens between them: a
+floor, not a frame rate.
 
 ONNX Runtime Web is loaded from a CDN, so the first load needs a network. Everything else is
 local.
@@ -146,8 +154,9 @@ model/
     ├── upscale_nn.ipynb        a first PyTorch model (and what not to export)
     ├── upscale_web.ipynb       the same model, shaped for the browser
     ├── upscale_strategies.ipynb  six architectures, one recipe, one eye-weighted metric
+    ├── upscale_geometry.ipynb  the shape to run one at: tile, batch, scale, ns per pixel
     ├── metrics.py              how a frame is scored: Y'CbCr, luma weighted 6:1:1
-    ├── webexport.py            the export call, tile step and op budget, shared
+    ├── webexport.py            the export call, the tiling geometry and the op budget
     ├── data/                   gitignored — dataset and samples
     ├── checkpoints/            gitignored — trained weights
     └── benchmark/

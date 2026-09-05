@@ -62,14 +62,14 @@
                 <th>Backend</th>
                 <th>Data</th>
                 <th>Runtime</th>
-                <th class="number">ms / tile</th>
+                <th class="number">ms / run</th>
                 <th class="number">median</th>
                 <th class="number">GPU</th>
                 <th class="number">dispatch</th>
-                <th class="number">tiles / s</th>
+                <th class="number">ns / kept px</th>
+                <th class="number">ns / frame px</th>
                 <th class="number">runs / frame</th>
                 <th class="number">1080p frame</th>
-                <th class="number">fps</th>
                 <th class="number">runs</th>
                 <th class="number">check</th>
             </tr>
@@ -78,13 +78,29 @@
     </table>
 
     <p class="footnote">
-        <strong>ms / tile</strong> is the fastest sample and <strong>median</strong> the
+        <strong>ms / run</strong> is the fastest sample and <strong>median</strong> the
         middle one, where a sample is a whole batch of runs timed together and divided
         &mdash; never one run timed, which finishes under the clock&rsquo;s resolution. The
-        gap between the two is how noisy the machine is. <strong>1080p frame</strong> is the
-        median multiplied by the tiles a 1920&times;1080 output takes at the step of the
-        model that produced it, which assumes the tiles cost the same and that nothing else
-        happens between them &mdash; it is a floor, not a frame rate.
+        gap between the two is how noisy the machine is. A <em>run</em> is whatever the
+        graph was exported to take: one tile, a batch of them, or a whole frame.
+    </p>
+
+    <p class="footnote">
+        <strong>ns / kept px</strong> is that run divided by the output pixels it is worth
+        keeping &mdash; the model&rsquo;s cost with the geometry taken out of it, and the
+        only column two different tile sizes can be compared by. Frames per second is
+        deliberately not a column: a run is a tile, so a rate of runs says more about the
+        step a graph was exported at than about the model in it, and a 256 step is worth
+        four times a 128 step before either has been run. <strong>ns / frame px</strong> is
+        the same number with the geometry put back: what a 1920&times;1080 output costs per
+        pixel of <em>it</em>, including everything the tiling computes past its edge and
+        every halo it computes twice. The two are equal only for a geometry that tiles the
+        frame exactly, and their ratio is what the tiling is wasting.
+        <strong>runs / frame</strong> and <strong>1080p frame</strong> follow from that,
+        the second assuming every run costs the same and that nothing happens between them
+        &mdash; a floor, not a frame rate. Multiply <strong>ns / frame px</strong> by the
+        pixels of any other output to get its floor: 2.07&nbsp;M for 1080p, 8.29&nbsp;M for
+        4K.
     </p>
 
     <p class="footnote">

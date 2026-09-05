@@ -154,6 +154,16 @@ def read_model(path):
         # tile takes forty, and multiplying a tile time by a count derived from `step`
         # alone would charge the first of those for forty dispatches it never makes.
         "covers": [(shape_in[3] - 2 * halo) * scale, (shape_in[2] - 2 * halo) * scale],
+        # How many of those tiles one run takes. It is the first dimension of the shape
+        # rather than anything written beside it, and it is what a per-pixel cost has to be
+        # divided by: a graph exported at batch 4 makes one dispatch for four tiles, so
+        # charging its run against one tile's worth of pixels would report it four times
+        # more expensive than it is.
+        "batch": shape_in[0],
+        # The output pixels one run is worth keeping - the whole point of a run, and what
+        # the page divides a run's time by. Everything else it computes is halo.
+        "pixels": shape_in[0] * (shape_in[3] - 2 * halo) * (shape_in[2] - 2 * halo)
+                  * scale * scale,
         "parameters": parameters,
         "kb": round(path.stat().st_size / 1024, 1),
         "ops": ops,
@@ -234,7 +244,8 @@ def main():
     if found:
         print(f"{len(found)} model(s) in {MODELS}")
         for row in found:
-            print(f"  {row['id']:<28} {row['input'][2]:>3} in   halo {row['halo']}   "
+            print(f"  {row['id']:<28} {row['input'][2]:>4}x{row['input'][3]:<4} in   "
+                  f"batch {row['batch']:<3} halo {row['halo']}   "
                   f"{row['precision']:<8} {row['kb']:>7.1f} KB")
     else:
         print(f"warning: no models in {MODELS} - run the export cell of a model notebook "

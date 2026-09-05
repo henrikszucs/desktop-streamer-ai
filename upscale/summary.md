@@ -3,7 +3,8 @@
 Reconstructing a higher resolution frame from the one the stream delivered, so a client can
 be sent fewer pixels than it displays.
 
-> **Status: a baseline, three learned models, and a sweep over six ways of building one.**
+> **Status: a baseline, three learned models, a sweep over six ways of building one, and
+> the geometry to run one at.**
 > `upscale_web` clears the frame budget: **0.19 ms per tile, 7 ms for a 1080p frame** on an
 > NVIDIA Ampere card in Chromium, at **+6.9 dB over bicubic**. The measurement has since
 > changed — quality is scored in Y'CbCr with luma weighted six times either chroma channel,
@@ -12,6 +13,12 @@ be sent fewer pixels than it displays.
 > differences anything here has claimed. All still synthetic frames, so the dB is a number
 > about this dataset and the ms is a number about that card. Nothing in `src/` calls any of
 > it yet.
+>
+> **The shape it runs at is now measured too, and the shipped one is wrong.** A tile is
+> **640×360 out, from a 320×180 step and a 328×188 input** — 6.8 ms a 1080p frame against
+> 11.7 ms at the published 128 step, and the same tile divides 720p, 1440p and 4K exactly.
+> Everything about geometry is charged in **nanoseconds per output pixel**, because a run
+> is a tile and a rate of runs cannot compare two tile sizes.
 
 **One notebook is one model.** A notebook owns its architecture, its training, its numbers
 and its export cell, and publishes straight into `benchmark/www/models/` — so a model is
@@ -41,6 +48,10 @@ Run in order, from this folder:
   variants, a reparameterized one that collapses for export, a recursive one, a dense
   cascade and a channel-attention gate. It also measures what a difference has to be worth
   before it is one, which is the most useful thing in it.
+- `upscale_geometry.ipynb` — **not a model: the shape one runs at.** Tile size, batch and
+  scale factor, swept on the CPU and then measured in the browser on the card, charged in
+  **nanoseconds per output pixel** because a run is a tile and a rate of runs cannot compare
+  two tile sizes. It is what chose 640×360, and what `webexport.plan_tiling` implements.
 
 `metrics.py` beside them is **how a frame is scored** — Y'CbCr, luma weighted 6:1:1, the
 channels reported apart, SSIM on luma, and the same weighting available as a loss. It is
@@ -450,11 +461,102 @@ because it is the only one comparable with everything else on the page, and step
 because it is what a client should run. The constant stays 128 until the static baselines
 are re-exported beside it.
 
+**That sweep asked the question of square steps only, and the answer was not among them.**
+`upscale_geometry.ipynb` below sweeps the batch and the rectangle as well, charges everything
+per output pixel, and lands on **640×360 out, from a 320×180 step** — 6.8 ms a 1080p frame
+against this table's 8 ms at 128, and the same tile divides 720p, 1440p and 4K exactly too.
+The `ms / frame` column here is also missing what it costs to *not* divide the frame: a 256
+step computes 52% more of a 1080p output than that output has.
+
 The rest of the original argument for 128 still holds: 84% of computed pixels kept at halo 6, a power of two once the pixels live in textures
 and workgroups, bounded memory independent of stream resolution, and 40 tiles per 1080p
 frame so the main thread yields 40 times instead of blocking once. That sweep was run
 against a model that has since been removed, so the timings behind it are gone; the geometry
 argument is not.
+
+## The geometry a client runs at (`upscale_geometry.ipynb`)
+
+Everything above is published at one geometry — a 128 LR step, a 136×136 input, 256×256
+kept — chosen on CPU timings before there was a browser to choose it on. This notebook asks
+what it should be, and measures the answer on the card.
+
+**The metric is nanoseconds per output pixel, and frames per second is not one.** A run of
+these graphs is a tile, so a rate of runs prices the geometry a graph was exported at rather
+than the model in it: at ×2 a 256 step is worth four times a 128 step before either one has
+been run. There are three pixel counts and they differ — **computed** (what the GPU ran),
+**kept** (what the tile contributes) and **delivered** (the frame) — and two taxes between
+them: the **halo tax**, `computed / kept`, which falls as the tile grows, and the **tiling
+tax**, what a step wastes off the edge of a frame it does not divide, which rises. Only the
+first is visible in a measurement of one tile.
+
+### The answer: 640×360 out, 320×180 step, 328×188 in
+
+Measured on the page — Ampere, fp16, WebGPU, GPU-resident, graph capture, one pass each, so
+read differences under 10% as noise:
+
+| geometry | keeps | ms / run | ns / kept px | ns / frame px | runs | 1080p frame | exact |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| whole frame | 1920×1080 | 5.703 | 2.75 | **2.75** | 1 | **5.7 ms** | yes |
+| **320×180 step** | **640×360** | 0.755 | 3.28 | **3.28** | 9 | **6.8 ms** | **yes** |
+| 320×270 step | 640×540 | 1.175 | 3.40 | 3.40 | 6 | 7.1 ms | yes |
+| 192 step | 384×384 | 0.516 | 3.50 | 3.73 | 15 | 7.7 ms | no |
+| 192×135 step | 384×270 | 0.420 | 4.05 | 4.05 | 20 | 8.4 ms | yes |
+| 128 step, batch 16 | 256×256 | 3.040 | 2.90 | 4.40 | 3 | 9.1 ms | no |
+| 384 step | 768×768 | 1.721 | 2.92 | 4.98 | 6 | 10.3 ms | no |
+| 256 step | 512×512 | 0.893 | 3.41 | 5.17 | 12 | 10.7 ms | no |
+| **128 step (shipped)** | 256×256 | 0.293 | 4.47 | **5.65** | 40 | **11.7 ms** | no |
+| 64 step | 128×128 | 0.186 | 11.35 | 12.11 | 135 | 25.1 ms | no |
+
+**The step everything is published at costs 72% more per delivered pixel than the best
+tiling, and 105% more than running the frame whole.** A third of what a 128 tile costs is
+the fixed cost of making a run at all, paid forty times a frame.
+
+**A tile does not have to be square, and the good ones are not.** 1920×1080 has no square
+tile that divides it — one would have to divide gcd(1920, 1080) = 120, a 60 pixel step,
+small enough to be nearly all overhead — so every square step pays an edge: 26% at 128, 52%
+at 256. Allow a rectangle and the waste goes to zero, and **640×360 divides every 16:9
+resolution**: 720p is 2×2 of it, 1080p 3×3, 1440p 4×4, 4K 6×6. One exported graph, one
+session, every stream. `webexport.plan_tiling` returns it for all four, and falls back to a
+padded square for a frame that admits nothing near it — 1366×768 pays 32%.
+
+Every exact row above has `ns / kept px` equal to its `ns / frame px`. That is what a tiling
+tax of exactly 1.0 looks like from the far end, and it is the cleanest evidence that the two
+columns measure what they claim to.
+
+### What else the sweep said
+
+- **The cost curve has no interior minimum.** Both taxes fall as the tile grows, so on cost
+  alone the cheapest way to upscale a frame is to upscale it in one run — which the
+  whole-frame row confirms at 2.75 ns. What bounds a tile from above is not speed: it is
+  what can be skipped, what fits in a WebGPU buffer, and what blocks the main thread.
+  **640×360 costs 19% more than the one-run frame and leaves 9 units that can be skipped**,
+  and tiling beats a whole-frame run whenever fewer than about 80% of tiles have changed —
+  against the 44% a desktop sequence measured. Hold both graphs and pick by content.
+- **Batching amortises a dispatch without coarsening what can be skipped.** 16 tiles of step
+  128 in one run cost 0.190 ms a tile against 0.293 run singly — 1.54×, where the fit
+  predicted 2.1×, so some of what looks like per-run cost is per-tile work a batch pays
+  anyway. It costs one halo per tile and nothing at the frame edge, which is what a bigger
+  tile cannot say. On the CPU provider a batch buys nothing at all, because there is no
+  dispatch there worth amortising.
+- **Scale is the cheapest lever and the least measured.** The body runs at LR whatever the
+  scale, so per *output* pixel ×2 is 2,409 MACs, ×3 is 1,436 and ×4 is 1,095 — and the
+  stream carries a quarter of the pixels at ×4. Measured at the same step: 5.65, 3.23 and
+  2.68 ns per delivered pixel. The quality of a ×3 or ×4 model is not measured anywhere
+  here, because the dataset is a ×2 degradation.
+- **Tiling stays exact at every geometry.** Tiled and whole-frame reconstruction are
+  bit-identical at halo 4 and visibly wrong at halo 3, so all of this is a speed question
+  and none of it is a quality one.
+- **A mid-low card is a 30 fps card at 1080p.** The same Ampere card read 2.1× faster in the
+  sweep further up this file than in this one, months apart, so absolute figures are a band
+  and only ratios survive it: inside that band an Iris Xe or an M1 is over the whole 1080p60
+  budget with the decode still to pay for, a GTX 1650 is at or over it, an RTX 3050 is
+  borderline, and a mid card is inside. 720p60 and 1080p30 are the honest low-end targets.
+  Every card but the one measured is a nominal TFLOPS figure and a ratio — the notebook
+  publishes the family so the same sweep can be taken on a real one.
+
+`TILE_STEP` stays 128: it is what the page *compares* models at, and moving it would
+invalidate every published number without measuring anything. `TARGET_KEPT_PX` is the new
+constant beside it, and it is 640×360.
 
 ## The browser benchmark (`benchmark/`)
 
@@ -587,6 +689,11 @@ faster. A precision is not fast or slow on its own; a provider's kernels for it 
 | parameters | 0 | 26,796 | **9,696** | **9,696** (42,564 while training) |
 | inside the op budget | no (`Resize`) | no (`Resize`) | **yes** | **yes** |
 
+The frame figures in that table are all at the published 128 step, which
+`upscale_geometry.ipynb` has since shown to be the most expensive geometry of the ones it
+swept — the same model at 320×180 reads 6.8 ms where 128 reads 11.7 on the same card in the
+same sitting.
+
 **The bar is cleared.** It stood as: *beat 23.62 dB inside a frame budget the static filters
 leave almost entirely unspent.* `upscale_web` scores +6.7 dB over the best static method and
 takes 7 ms of a 16.7 ms frame at 60 fps — 5 ms at the tile size the browser sweep argues
@@ -627,8 +734,9 @@ depend on the data at all.
 - **Skip the tiles that did not change**, in whatever ends up driving inference in `src/`.
   It is the largest remaining factor on desktop content, it is exact rather than
   approximate, and the model needs no change for it.
-- **Decide the tile step and re-export everything at it.** The sweep says 256 on this card;
-  the constant stays 128 until the static baselines move with it.
+- **Re-export everything at 320×180.** The step is decided — `upscale_geometry.ipynb`
+  measured it — and every published graph is still at 128, including the one a client would
+  run. `TILE_STEP` itself stays 128 while it is what the page compares models at.
 - The same runtime tables on a GPU for training and for the desktop client. The browser
   side is now measured on real hardware; torch and onnxruntime here are still CPU builds.
 - Tiled inference in the client, so a frame larger than memory can be upscaled.

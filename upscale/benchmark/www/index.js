@@ -7,6 +7,13 @@ const MODELS_URL = "api/models";
 // The output picture the frame columns are about.
 const FRAME_WIDTH = 1920;
 const FRAME_HEIGHT = 1080;
+// Everything here is charged per output pixel, and frames per second is not a column.
+// A run is a tile - or a batch of them, or a whole frame - so a rate of runs is a number
+// about a geometry rather than about a model, and two geometries cannot be compared by it:
+// a 128 step and a 256 step differ by 4x in what one run is worth before either one has
+// been run. Nanoseconds per output pixel divides that out, and a frame cost multiplies it
+// back in whenever one is wanted. See upscale_geometry.ipynb, which is the notebook this
+// column exists for.
 const WASM_PATH = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/";
 const WARMUP = 5;
 // A sample is a batch of runs timed together and divided, never one run timed. Two
@@ -548,11 +555,13 @@ const prepareOutput = function(session, entry, location) {
 };
 
 const describe = function(entry) {
-    const [, , height, width] = entry["input"];
+    const [batch, , height, width] = entry["input"];
     const parts = [
         entry["precision"] || entry["dtype"],
         `${width}×${height} in, ${width * entry["scale"]}×${height * entry["scale"]} out`,
-        `keeps ${entry["covers"][0]}×${entry["covers"][1]}`,
+        `keeps ${entry["covers"][0]}×${entry["covers"][1]}`
+            + (batch > 1 ? ` × ${batch} tiles a run` : ""),
+        `${entry["pixels"].toLocaleString()} output px a run`,
         `${entry["kb"]} KB`,
     ];
     if (entry["halo"] !== null) {
@@ -734,23 +743,34 @@ const benchmark = async function(entry, provider, location, mode, seconds) {
         samples.sort((a, b) => a - b);
         const median = samples[Math.floor(samples.length / 2)];
         // How many runs one frame takes, from what a single run covers in each dimension
-        // rather than from a square tile assumed out of `step`.
+        // rather than from a square tile assumed out of `step`, and then from how many of
+        // those tiles one run takes: a graph exported at batch 4 makes a quarter of the
+        // dispatches. The last batch of a frame is short and still runs full - a static
+        // shape has no other option - so the division rounds up on both axes.
         const covers = entry["covers"];
         const tilesPerFrame = Math.ceil(FRAME_WIDTH / covers[0])
             * Math.ceil(FRAME_HEIGHT / covers[1]);
+        const runsPerFrame = Math.ceil(tilesPerFrame / entry["batch"]);
 
         return {
             best: samples[0],
             median: median,
             chunk: chunk,
             runs: samples.length * chunk,
-            tilesPerSecond: 1000 / median,
-            tilesPerFrame: tilesPerFrame,
-            frameMs: median * tilesPerFrame,
-            fps: 1000 / (median * tilesPerFrame),
+            // The model's own cost, geometry divided out: the run, over the output pixels
+            // that run is worth keeping. Halo is not in the denominator, so a tile that
+            // computes a wide margin to keep a narrow centre pays for it here.
+            nsPerPixel: (median * 1e6) / entry["pixels"],
+            // And the same for a whole 1080p frame, which additionally carries whatever
+            // the tiling computes off the edge of it. The two are equal only for a
+            // geometry that tiles the frame exactly.
+            nsPerFramePixel: (median * runsPerFrame * 1e6) / (FRAME_WIDTH * FRAME_HEIGHT),
+            runsPerFrame: runsPerFrame,
+            frameMs: median * runsPerFrame,
             provider: provider,
             location: location,
             mode: mode,
+            batch: entry["batch"],
             gpuMs: gpu ? gpu["ms"] : null,
             gpuKernels: gpu ? gpu["kernels"] : null,
             checksum: value,
@@ -775,10 +795,12 @@ const addRow = function(entry, result) {
         result["gpuMs"] === null ? "n/a" : result["gpuMs"].toFixed(4),
         result["gpuMs"] === null ? "n/a"
             : Math.max(0, result["median"] - result["gpuMs"]).toFixed(3),
-        result["tilesPerSecond"].toFixed(0),
-        String(result["tilesPerFrame"]),
+        result["nsPerPixel"].toFixed(2),
+        result["nsPerFramePixel"].toFixed(2),
+        result["batch"] > 1
+            ? `${result["runsPerFrame"]} × ${result["batch"]}`
+            : String(result["runsPerFrame"]),
         result["frameMs"].toFixed(1) + " ms",
-        result["fps"].toFixed(1),
         String(result["runs"]),
         result["checksum"].toFixed(4),
     ];
@@ -818,7 +840,8 @@ const run = async function() {
             seconds);
         runnable.add(refusalKey(entry, choice));
         addRow(entry, result);
-        setStatus(`${entry["label"]}: ${result["median"].toFixed(3)} ms per tile `
+        setStatus(`${entry["label"]}: ${result["nsPerPixel"].toFixed(2)} ns per output `
+            + `pixel, ${result["median"].toFixed(3)} ms per run `
             + `(${result["runs"]} runs in batches of ${result["chunk"]}, `
             + `${plan.location === "gpu" ? "GPU-resident tensors" : "CPU round trip"}, `
             + `${plan.mode})`
