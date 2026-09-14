@@ -4,13 +4,31 @@ The video work for Desktop Streamer: upscaling a received frame, and generating 
 between or after the ones that arrive. A `uv`-managed Python project, separate from the Node
 application — nothing in `src/` calls it yet.
 
-Three problems, one folder each, each with its own `summary.md`:
+Three problems, one folder each, each with its own `summary.md` - and beside them `mock/`,
+which is not a problem but the three stand-ins the client runs today (see below):
 
 | Folder | Problem | State |
 | --- | --- | --- |
 | [`upscale/`](upscale/summary.md) | more pixels out than in | a static baseline, three learned models and a strategy sweep |
 | [`frame_gen_intra/`](frame_gen_intra/summary.md) | interpolate between two frames | not started |
 | [`frame_gen_extra/`](frame_gen_extra/summary.md) | extrapolate past the newest frame | not started |
+
+## The mock graphs the client runs
+
+`mock/make_mock_models.py` writes the three graphs `src/client/web/media/models/` holds -
+`upscale.onnx`, `interpolate.onnx`, `extrapolate.onnx` - which the client's enhancement
+menu runs through ONNX Runtime Web (`src/client/web/src/room/stream-enhance.js`). They are
+stand-ins, not models: the smallest ONNX graph with the shape of the real thing and real GPU
+work in between, computing something that leaves the picture right (a bilinear ×2 and an
+identity convolution; the mean of two frames; their linear extrapolation), so the client
+pipeline could be built and timed before any trained weights exist. A trained model replaces
+one by being exported under the same name with the same contract: `input` float32 NCHW in
+[0, 1] with `H` and `W` symbolic (`[1, 3, H, W]`, or `[1, 6, H, W]` for the two-frame ones,
+the earlier frame first), `output` the same shape or twice it for the upscaler.
+
+```
+uv run mock/make_mock_models.py
+```
 
 ## Setup
 
