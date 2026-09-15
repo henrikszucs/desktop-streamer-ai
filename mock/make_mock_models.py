@@ -7,7 +7,7 @@ timed before any trained weights exist. What they compute is chosen so the pictu
 right: a client running all three with these graphs shows the stream it would show
 without them, only later.
 
-    upscale.onnx      [1, 3, H, W] -> [1, 3, 2H, 2W]   bilinear x2, then a 3x3 identity conv
+    upscale.onnx      [1, 3, H, W] -> [1, 3, 2H, 2W]   a 3x3 identity conv, then bilinear x2
     interpolate.onnx  [1, 6, H, W] -> [1, 3, H, W]     the mean of the two frames, a 1x1 conv
     extrapolate.onnx  [1, 6, H, W] -> [1, 3, H, W]     2*B - A clipped to [0, 1], a 1x1 conv
 
@@ -15,7 +15,15 @@ Every graph takes float32 NCHW in [0, 1] with H and W dynamic, so one file serve
 resolution the stream arrives at, and every operator in them is one the WebGPU and the WebGL
 execution providers of ONNX Runtime Web both run (`Resize`, `Conv`, `Clip`). The identity
 convolution in the upscaler is there for the work: a bare `Resize` measures the copy in and
-out rather than the runtime.
+out rather than the runtime. It runs *before* the resize, at the input resolution, the way
+a real upscaler computes its features low and upsamples last - the same convolution after
+the resize cost three times the whole frame on the WebGPU provider, for nothing a mock has
+to show.
+
+The client never hands a graph a whole frame: it cuts the picture into 328x188 tiles (a
+320x180 step and a halo of 4 pixels every model is given beyond it) and merges the kept
+centres back - see `src/client/web/src/room/stream-enhance.js`. A model exported for the
+client has to be right on a tile of that size and to read no further than the halo.
 
 Run from `model/` and the files land where the client reads them:
 
@@ -49,18 +57,18 @@ def save(graph, name):
 
 
 def make_upscale():
-    # bilinear x2, then a 3x3 convolution whose kernel is the identity - centre 1 on the
-    # channel's own plane, 0 everywhere else - so the output is the resize and the GPU
-    # still runs a convolution over every output pixel
+    # a 3x3 convolution whose kernel is the identity - centre 1 on the channel's own
+    # plane, 0 everywhere else - then bilinear x2, so the output is the resize and the GPU
+    # still runs a convolution over every input pixel
     weight = np.zeros((3, 3, 3, 3), dtype=np.float32)
     for channel in range(3):
         weight[channel, channel, 1, 1] = 1.0
     graph = helper.make_graph(
         [
-            helper.make_node("Resize", ["input", "", "scales"], ["resized"],
-                             mode="linear", coordinate_transformation_mode="half_pixel"),
-            helper.make_node("Conv", ["resized", "weight"], ["output"],
+            helper.make_node("Conv", ["input", "weight"], ["features"],
                              kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
+            helper.make_node("Resize", ["features", "", "scales"], ["output"],
+                             mode="linear", coordinate_transformation_mode="half_pixel"),
         ],
         "upscale_mock",
         [helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 3, "H", "W"])],

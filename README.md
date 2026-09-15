@@ -19,9 +19,12 @@ which is not a problem but the three stand-ins the client runs today (see below)
 `upscale.onnx`, `interpolate.onnx`, `extrapolate.onnx` - which the client's enhancement
 menu runs through ONNX Runtime Web (`src/client/web/src/room/stream-enhance.js`). They are
 stand-ins, not models: the smallest ONNX graph with the shape of the real thing and real GPU
-work in between, computing something that leaves the picture right (a bilinear ×2 and an
-identity convolution; the mean of two frames; their linear extrapolation), so the client
-pipeline could be built and timed before any trained weights exist. A trained model replaces
+work in between, computing something that leaves the picture right (an identity convolution
+and a bilinear ×2; the mean of two frames; their linear extrapolation), so the client
+pipeline could be built and timed before any trained weights exist. The client never hands a
+graph a whole frame: it runs 328×188 tiles (a 320×180 step with a 4 pixel halo, the
+geometry `upscale/webexport.py` measured) and merges the kept centres back, so a model has
+to be right on a tile of that size and read no further than the halo. A trained model replaces
 one by being exported under the same name with the same contract: `input` float32 NCHW in
 [0, 1] with `H` and `W` symbolic (`[1, 3, H, W]`, or `[1, 6, H, W]` for the two-frame ones,
 the earlier frame first), `output` the same shape or twice it for the upscaler.
