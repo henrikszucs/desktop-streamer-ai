@@ -7,15 +7,20 @@ timed before any trained weights exist. What they compute is chosen so the pictu
 right: a client running all three with these graphs shows the stream it would show
 without them, only later.
 
-    upscale.onnx      [N, 3, H, W] -> [N, 3, 2H, 2W]   a depthwise 3x3 identity conv, then bilinear x2
-    interpolate.onnx  [N, 6, H, W] -> [N, 3, H, W]     the mean of the two frames
-    extrapolate.onnx  [N, 6, H, W] -> [N, 3, H, W]     2*B - A clipped to [0, 1]
+    upscale.onnx      input [N, 3, H, W]                     -> output [N, 3, 2H, 2W]
+                      a depthwise 3x3 identity conv, then bilinear x2
+    interpolate.onnx  previous, current [N, 3, H, W] each    -> output [N, 3, H, W]
+                      the mean of the two frames
+    extrapolate.onnx  previous, current [N, 3, H, W] each    -> output [N, 3, H, W]
+                      2 * current - previous clipped to [0, 1]
 
-Every graph takes float32 NCHW in [0, 1] with N, H and W dynamic, so one file serves every
+Every tensor is float32 NCHW in [0, 1] with N, H and W dynamic, so one file serves every
 resolution the stream arrives at and every batch of tiles it is cut into, and every operator
 in them is one the WebGPU and the WebGL execution providers of ONNX Runtime Web both run
-(`Conv`, `Resize`, `Slice`, `Add`, `Mul`, `Clip` - `Split` at this opset is not on the WebGL
-one, which is why the two halves are sliced apart).
+(`Conv`, `Resize`, `Add`, `Mul`, `Clip`). The two-frame models take the two frames as **two
+inputs** rather than one six channel tensor: stacked, the client paid a copy to stack them
+and the graph paid a `Slice` to take them apart again - 11 of the 17 ms an interpolated
+1080p frame cost, for nothing either side wanted.
 
 The client never hands a graph a whole frame: it cuts the picture into 328x188 tiles (a
 320x180 step and a halo of 4 pixels every model is given beyond it), runs *every tile of a
@@ -31,7 +36,12 @@ The shapes are chosen by what the WebGPU provider runs well, measured on a 1080p
     1x1 conv, 3 -> 16 or 16 -> 3          17 ms      the same
     depthwise 3x3 conv (group = channels)  1.4 ms    its own kernel
     bilinear Resize x2                    11 ms      the floor, and what a real upscaler pays
-    float16, graph capture                 no change - the cost is compute inside the kernels
+    NCHW <-> NHWC Transpose pair           4.3 ms    inserted by the provider around every
+                                                     graph's convolutions, once per graph
+    Slice of a 6 channel input in two      9 ms      which is why there are two inputs
+    Mul, Add, Clip over a frame            1-2 ms    each
+    float16, graph capture                 no change - the kernels are index-bound, not
+                                                     bandwidth- or arithmetic-bound
 
 So the upscaler's work is a depthwise convolution before the resize (features low, upsample
 last, as a real one does), and the two blends are the elementwise arithmetic they are rather
@@ -94,27 +104,22 @@ def make_upscale():
 
 
 def make_blend(name, weight_a, weight_b):
-    # two frames stacked on the channel axis - A in 0..2, B in 3..5 - split apart, mixed
-    # as weight_a * A + weight_b * B, then clipped: the extrapolation can leave [0, 1], the
-    # mean cannot
+    # the two frames as two inputs, mixed as weight_a * previous + weight_b * current, then
+    # clipped: the extrapolation can leave [0, 1], the mean cannot
     graph = helper.make_graph(
         [
-            helper.make_node("Slice", ["input", "start_a", "end_a", "axes"], ["a"]),
-            helper.make_node("Slice", ["input", "start_b", "end_b", "axes"], ["b"]),
-            helper.make_node("Mul", ["a", "weight_a"], ["wa"]),
-            helper.make_node("Mul", ["b", "weight_b"], ["wb"]),
+            helper.make_node("Mul", ["previous", "weight_a"], ["wa"]),
+            helper.make_node("Mul", ["current", "weight_b"], ["wb"]),
             helper.make_node("Add", ["wa", "wb"], ["mixed"]),
             helper.make_node("Clip", ["mixed", "low", "high"], ["output"]),
         ],
         f"{name}_mock",
-        [helper.make_tensor_value_info("input", TensorProto.FLOAT, ["N", 6, "H", "W"])],
+        [
+            helper.make_tensor_value_info("previous", TensorProto.FLOAT, ["N", 3, "H", "W"]),
+            helper.make_tensor_value_info("current", TensorProto.FLOAT, ["N", 3, "H", "W"]),
+        ],
         [helper.make_tensor_value_info("output", TensorProto.FLOAT, ["N", 3, "H", "W"])],
         initializer=[
-            numpy_helper.from_array(np.array([0], dtype=np.int64), "start_a"),
-            numpy_helper.from_array(np.array([3], dtype=np.int64), "end_a"),
-            numpy_helper.from_array(np.array([3], dtype=np.int64), "start_b"),
-            numpy_helper.from_array(np.array([6], dtype=np.int64), "end_b"),
-            numpy_helper.from_array(np.array([1], dtype=np.int64), "axes"),
             numpy_helper.from_array(np.array(weight_a, dtype=np.float32), "weight_a"),
             numpy_helper.from_array(np.array(weight_b, dtype=np.float32), "weight_b"),
             numpy_helper.from_array(np.array(0.0, dtype=np.float32), "low"),

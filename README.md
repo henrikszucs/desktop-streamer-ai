@@ -28,9 +28,11 @@ merges the kept centres back - so a model has to be right on a tile of that size
 further than the halo, and take a batch. The generator's docstring holds what the runtime's
 WebGPU provider charges for the operators the mocks could have been built from, which is
 worth reading before choosing a trained model's. A trained model replaces
-one by being exported under the same name with the same contract: `input` float32 NCHW in
-[0, 1] with `N`, `H` and `W` symbolic (`[N, 3, H, W]`, or `[N, 6, H, W]` for the two-frame
-ones, the earlier frame first), `output` the same shape or twice it for the upscaler.
+one by being exported under the same name with the same contract: float32 NCHW in [0, 1]
+with `N`, `H` and `W` symbolic - `input` `[N, 3, H, W]` for the upscaler, `previous` and
+`current` `[N, 3, H, W]` each for the two-frame ones (two inputs, never one stacked six
+channel tensor: the client would pay a copy and the graph a `Slice` for it), `output`
+`[N, 3, H, W]` or twice it for the upscaler.
 
 ```
 uv run mock/make_mock_models.py
