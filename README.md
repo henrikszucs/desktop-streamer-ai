@@ -22,12 +22,15 @@ stand-ins, not models: the smallest ONNX graph with the shape of the real thing 
 work in between, computing something that leaves the picture right (an identity convolution
 and a bilinear ×2; the mean of two frames; their linear extrapolation), so the client
 pipeline could be built and timed before any trained weights exist. The client never hands a
-graph a whole frame: it runs 328×188 tiles (a 320×180 step with a 4 pixel halo, the
-geometry `upscale/webexport.py` measured) and merges the kept centres back, so a model has
-to be right on a tile of that size and read no further than the halo. A trained model replaces
+graph a whole frame: it cuts it into 328×188 tiles (a 320×180 step with a 4 pixel halo, the
+geometry `upscale/webexport.py` measured), runs every tile of a frame as one batch, and
+merges the kept centres back - so a model has to be right on a tile of that size, read no
+further than the halo, and take a batch. The generator's docstring holds what the runtime's
+WebGPU provider charges for the operators the mocks could have been built from, which is
+worth reading before choosing a trained model's. A trained model replaces
 one by being exported under the same name with the same contract: `input` float32 NCHW in
-[0, 1] with `H` and `W` symbolic (`[1, 3, H, W]`, or `[1, 6, H, W]` for the two-frame ones,
-the earlier frame first), `output` the same shape or twice it for the upscaler.
+[0, 1] with `N`, `H` and `W` symbolic (`[N, 3, H, W]`, or `[N, 6, H, W]` for the two-frame
+ones, the earlier frame first), `output` the same shape or twice it for the upscaler.
 
 ```
 uv run mock/make_mock_models.py
