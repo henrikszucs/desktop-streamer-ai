@@ -25,7 +25,7 @@ and the graph paid a `Slice` to take them apart again - 11 of the 17 ms an inter
 The client never hands a graph a whole frame: it cuts the picture into 328x188 tiles (a
 320x180 step and a halo of 4 pixels every model is given beyond it), runs *every tile of a
 frame as one batch* and merges the kept centres back - see
-`src/client/web/src/room/stream-enhance.js`. A model exported for the client has to be right
+`src/client/web/src/room/stream-enhance.js` in desktop-streamer. A model exported for the client has to be right
 on a tile of that size, read no further than the halo, and take a batch.
 
 The shapes are chosen by what the WebGPU provider runs well, measured on a 1080p frame
@@ -48,12 +48,15 @@ last, as a real one does), and the two blends are the elementwise arithmetic the
 than a 1x1 convolution that says the same thing. A trained model will pay the runtime's
 prices for whatever it is built from; these are the prices.
 
-Run from `model/` and the files land where the client reads them:
+Run from the repo root and the files land where the client reads them, in desktop-streamer
+checked out beside this repo - or give the folder to write to:
 
     uv run mock/make_mock_models.py
+    uv run mock/make_mock_models.py <models folder>
 """
 
 # internal
+import sys
 from pathlib import Path
 
 # third-party
@@ -61,8 +64,12 @@ import numpy as np
 import onnx
 from onnx import TensorProto, helper, numpy_helper
 
-# where the web client reads them: media, since a graph is an asset like an image
-OUT_DIR = Path(__file__).resolve().parents[2] / "src" / "client" / "web" / "media" / "models"
+# where the web client reads them: media, since a graph is an asset like an image. The
+# client is desktop-streamer, checked out beside this repo; a folder given on the command
+# line is written to instead
+CLIENT_DIR = Path(__file__).resolve().parents[2] / "desktop-streamer"
+OUT_DIR = (Path(sys.argv[1]) if len(sys.argv) > 1
+           else CLIENT_DIR / "src" / "client" / "web" / "media" / "models")
 OPSET = 17
 
 

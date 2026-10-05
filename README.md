@@ -1,8 +1,9 @@
-# model/
+# desktop-streamer-ai
 
 The video work for Desktop Streamer: upscaling a received frame, and generating frames
 between or after the ones that arrive. A `uv`-managed Python project, separate from the Node
-application — nothing in `src/` calls it yet.
+application, [desktop-streamer](https://github.com/henrikszucs/desktop-streamer) — nothing in
+its `src/` calls it yet. It used to be that repo's `model/` folder, and its history came along.
 
 Three problems, one folder each, each with its own `summary.md` - and beside them `mock/`,
 which is not a problem but the three stand-ins the client runs today (see below):
@@ -15,9 +16,10 @@ which is not a problem but the three stand-ins the client runs today (see below)
 
 ## The mock graphs the client runs
 
-`mock/make_mock_models.py` writes the three graphs `src/client/web/media/models/` holds -
-`upscale.onnx`, `interpolate.onnx`, `extrapolate.onnx` - which the client's enhancement
-menu runs through ONNX Runtime Web (`src/client/web/src/room/stream-enhance.js`). They are
+`mock/make_mock_models.py` writes the three graphs desktop-streamer's
+`src/client/web/media/models/` holds - `upscale.onnx`, `interpolate.onnx`,
+`extrapolate.onnx` - which the client's enhancement menu runs through ONNX Runtime Web
+(`src/client/web/src/room/stream-enhance.js` there). They are
 stand-ins, not models: the smallest ONNX graph with the shape of the real thing and real GPU
 work in between, computing something that leaves the picture right (an identity convolution
 and a bilinear ×2; the mean of two frames; their linear extrapolation), so the client
@@ -35,7 +37,8 @@ channel tensor: the client would pay a copy and the graph a `Slice` for it), `ou
 `[N, 3, H, W]` or twice it for the upscaler.
 
 ```
-uv run mock/make_mock_models.py
+uv run mock/make_mock_models.py                 # into ../desktop-streamer, checked out beside this repo
+uv run mock/make_mock_models.py <models folder> # or anywhere else
 ```
 
 ## Setup
@@ -44,7 +47,6 @@ uv run mock/make_mock_models.py
 `pyproject.toml`, so nothing needs to be installed first.
 
 ```
-cd model
 uv sync
 ```
 
@@ -97,7 +99,7 @@ all, still lists correctly: the id and label fall back to the filename.
 so.
 
 The dependency that runs notebooks is `ipykernel`, not a frontend: open them in VS Code and
-pick `model/.venv` as the kernel, or point whatever Jupyter you already have at that
+pick `.venv` as the kernel, or point whatever Jupyter you already have at that
 interpreter. Add `jupyterlab` to the project if you want one of your own.
 
 **2. Start the server.** It needs `fastapi[standard]` — the `[standard]` extra is what
@@ -169,8 +171,9 @@ local.
 ## Layout
 
 ```
-model/
+desktop-streamer-ai/
 ├── pyproject.toml              deps and the pinned interpreter
+├── mock/                       make_mock_models.py, the three stand-in graphs the client runs
 ├── frame_gen_intra/            summary.md only, nothing built yet
 ├── frame_gen_extra/            summary.md only, nothing built yet
 └── upscale/

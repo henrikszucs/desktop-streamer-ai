@@ -1,5 +1,5 @@
 [project]
-name = "desktop-streamer"
+name = "desktop-streamer-ai"
 version = "1.0.0"
 requires-python = "==3.14.*"
 dependencies = [

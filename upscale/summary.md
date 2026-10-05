@@ -11,7 +11,7 @@ be sent fewer pixels than it displays.
 > because that is the ratio an eye reads them at — and the strategy sweep that uses it found
 > that **the noise floor of this dataset is 0.61 dB**, which is wider than most of the
 > differences anything here has claimed. All still synthetic frames, so the dB is a number
-> about this dataset and the ms is a number about that card. Nothing in `src/` calls any of
+> about this dataset and the ms is a number about that card. Nothing in desktop-streamer's `src/` calls any of
 > it yet.
 >
 > **The shape it runs at is now measured too, and the shipped one is wrong.** A tile is
@@ -251,7 +251,7 @@ previous result is still correct. On a synthesised desktop sequence (a dragged w
 moving cursor, a block of video playing) 44% of tiles change per frame at step 128, which
 turns 7.6 ms into 3.3 ms. A real session with a typing pause in it sits much further to the
 cheap end, and a full-screen video sits at the other. That is a client-side strategy rather
-than a model property, and nothing in `src/` implements it yet.
+than a model property, and nothing in desktop-streamer's `src/` implements it yet.
 
 ### Where the quality went
 
@@ -564,7 +564,7 @@ A page that times a tile through a model in the browser it will actually run in.
 — it never looks at the picture.
 
 ```
-uv run upscale/benchmark/main.py   # from model/, then open http://127.0.0.1:8000
+uv run upscale/benchmark/main.py   # from the repo root, then open http://127.0.0.1:8000
 ```
 
 `main.py` serves `www/` and answers `GET /api/models`; the page cannot run from `file://`
@@ -731,7 +731,7 @@ depend on the data at all.
   captures instead of synthetic frames, and a codec round trip in the degradation: a model
   trained on clean bicubic pairs has never seen blocking or ringing, and a +7 dB that comes
   from inverting a known blur will not survive contact with one it has not seen.
-- **Skip the tiles that did not change**, in whatever ends up driving inference in `src/`.
+- **Skip the tiles that did not change**, in whatever ends up driving inference in desktop-streamer's `src/`.
   It is the largest remaining factor on desktop content, it is exact rather than
   approximate, and the model needs no change for it.
 - **Re-export everything at 320×180.** The step is decided — `upscale_geometry.ipynb`

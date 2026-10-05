@@ -11,7 +11,7 @@ The two things a graph cannot state - the label a human chose for it, and the de
 time this notebook measured - go into the model's own `metadata_props`, so a model stays
 one file that can be copied, deleted or dropped in by hand without anything else knowing.
 
-Usage, from a notebook whose working directory is `model/upscale`:
+Usage, from a notebook whose working directory is `upscale/`:
 
     import webexport
     info = webexport.export(model, "upscale_name_tile128.onnx", size, label="name", halo=4)
