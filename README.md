@@ -5,18 +5,24 @@ between or after the ones that arrive. A `uv`-managed Python project, separate f
 application, [desktop-streamer](https://github.com/henrikszucs/desktop-streamer) — nothing in
 its `src/` calls it yet. It used to be that repo's `model/` folder, and its history came along.
 
-Three problems, one folder each, each with its own `summary.md` - and beside them `mock/`,
-which is not a problem but the three stand-ins the client runs today (see below):
+Two top-level folders. **`src/`** is the source: the code, the notebooks that train and
+measure, and the data and checkpoints they leave behind. **`dist/`** is the output: the
+finished models, one subfolder per problem, written by the notebooks' export cells and
+nothing else.
+
+Three problems, one folder each under `src/`, each with its own `summary.md` - and beside
+them `src/mock/`, which is not a problem but the three stand-ins the client runs today (see
+below):
 
 | Folder | Problem | State |
 | --- | --- | --- |
-| [`upscale/`](upscale/summary.md) | more pixels out than in | a static baseline, three learned models and a strategy sweep |
-| [`frame_gen_intra/`](frame_gen_intra/summary.md) | interpolate between two frames | not started |
-| [`frame_gen_extra/`](frame_gen_extra/summary.md) | extrapolate past the newest frame | not started |
+| [`src/upscale/`](src/upscale/summary.md) | more pixels out than in | a static baseline, three learned models and a strategy sweep |
+| [`src/frame_gen_intra/`](src/frame_gen_intra/summary.md) | interpolate between two frames | not started |
+| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | extrapolate past the newest frame | not started |
 
 ## The mock graphs the client runs
 
-`mock/make_mock_models.py` writes the three graphs desktop-streamer's
+`src/mock/make_mock_models.py` writes the three graphs desktop-streamer's
 `src/client/web/media/models/` holds - `upscale.onnx`, `interpolate.onnx`,
 `extrapolate.onnx` - which the client's enhancement menu runs through ONNX Runtime Web
 (`src/client/web/src/room/stream-enhance.js` there). They are
@@ -25,7 +31,7 @@ work in between, computing something that leaves the picture right (an identity 
 and a bilinear ×2; the mean of two frames; their linear extrapolation), so the client
 pipeline could be built and timed before any trained weights exist. The client never hands a
 graph a whole frame: it cuts it into 328×188 tiles (a 320×180 step with a 4 pixel halo, the
-geometry `upscale/webexport.py` measured), runs every tile of a frame as one batch, and
+geometry `src/upscale/webexport.py` measured), runs every tile of a frame as one batch, and
 merges the kept centres back - so a model has to be right on a tile of that size, read no
 further than the halo, and take a batch. The generator's docstring holds what the runtime's
 WebGPU provider charges for the operators the mocks could have been built from, which is
@@ -37,8 +43,8 @@ channel tensor: the client would pay a copy and the graph a `Slice` for it), `ou
 `[N, 3, H, W]` or twice it for the upscaler.
 
 ```
-uv run mock/make_mock_models.py                 # into ../desktop-streamer, checked out beside this repo
-uv run mock/make_mock_models.py <models folder> # or anywhere else
+uv run src/mock/make_mock_models.py                 # into ../desktop-streamer, checked out beside this repo
+uv run src/mock/make_mock_models.py <models folder> # or anywhere else
 ```
 
 ## Setup
@@ -57,27 +63,27 @@ number recorded so far is a CPU number.
 ## Running the benchmark server
 
 The upscaling models are meant to run in a browser through ONNX Runtime Web, so the
-measurement that decides anything is a browser measurement. `upscale/benchmark/` is a small
+measurement that decides anything is a browser measurement. `src/upscale/benchmark/` is a small
 FastAPI app that serves the page which takes it.
 
 **1. Publish the models.** **One notebook is one model.** Publishing one is writing its
-`.onnx` into `upscale/benchmark/www/models/` and nothing else — **every model notebook ends
+`.onnx` into `dist/upscale/` and nothing else — **every model notebook ends
 with its own export cell** that does exactly that. There is no staging folder and no
 manifest: the server builds the dropdown out of the graphs in that folder on every request,
 so dropping a file in or deleting one is the whole operation, no restart and no re-export of
 anything else. Run whichever notebooks you want on the page:
 
-- `upscale/data_preprocess.ipynb` — builds the patch dataset, and has to run first. With
+- `src/upscale/data_preprocess.ipynb` — builds the patch dataset, and has to run first. With
   `data/raw/` empty it synthesises desktop-like frames, so it works before any real data
   exists. It is not a model and exports nothing.
-- `upscale/upscale_dummy.ipynb` — the static baseline: the three filters ONNX can express
+- `src/upscale/upscale_dummy.ipynb` — the static baseline: the three filters ONNX can express
   as a `Resize` node, nearest, bilinear and bicubic. The bar a learned model must beat.
-- `upscale/upscale_nn.ipynb` — the bicubic-residual model.
-- `upscale/upscale_web.ipynb` — the same model shaped for the browser, published at three
+- `src/upscale/upscale_nn.ipynb` — the bicubic-residual model.
+- `src/upscale/upscale_web.ipynb` — the same model shaped for the browser, published at three
   precisions and two tile sizes.
-- `upscale/upscale_strategies.ipynb` — six architectures under one recipe, scored by the
+- `src/upscale/upscale_strategies.ipynb` — six architectures under one recipe, scored by the
   eye-weighted metric, publishing the two that win.
-- `upscale/upscale_geometry.ipynb` — not a model: the *shape* one runs at. Sweeps tile size,
+- `src/upscale/upscale_geometry.ipynb` — not a model: the *shape* one runs at. Sweeps tile size,
   batch and scale factor, charges everything in nanoseconds per output pixel, and publishes
   a family of geometries for the page to measure on whatever GPU is in front of it.
 
@@ -95,8 +101,10 @@ written into the model's own `metadata_props`, so a model is one file that can b
 renamed without losing anything. A model exported by something else, with no metadata at
 all, still lists correctly: the id and label fall back to the filename.
 
-`benchmark/www/models/` is gitignored, so a fresh clone starts empty and the page will say
-so.
+`dist/` is committed: the models in it took long to train, so a fresh clone has them and
+the page lists them without running a notebook. Re-running an export cell overwrites the
+file it owns, and the change shows up in git like any other. The server serves `dist/upscale/` under the page's `models/` path, so the page reads the finished
+models where they are rather than from a copy.
 
 The dependency that runs notebooks is `ipykernel`, not a frontend: open them in VS Code and
 pick `.venv` as the kernel, or point whatever Jupyter you already have at that
@@ -106,7 +114,7 @@ interpreter. Add `jupyterlab` to the project if you want one of your own.
 pulls in uvicorn, without which there is nothing to serve with.
 
 ```
-uv run upscale/benchmark/main.py
+uv run src/upscale/benchmark/main.py
 ```
 
 Then open <http://127.0.0.1:8000>. Options:
@@ -117,18 +125,18 @@ Then open <http://127.0.0.1:8000>. Options:
 | `--host` | `127.0.0.1` | `0.0.0.0` to measure from another machine on the network |
 
 `[standard]` also installs the `fastapi` CLI, so `uv run fastapi run
-upscale/benchmark/main.py` works as well — with two differences worth knowing. It binds
+src/upscale/benchmark/main.py` works as well — with two differences worth knowing. It binds
 `0.0.0.0` rather than localhost, and on a Windows console that is not UTF-8 its startup
 banner dies with a `UnicodeEncodeError` before the server ever starts:
 
 ```
 set PYTHONIOENCODING=utf-8
-uv run fastapi run upscale/benchmark/main.py
+uv run fastapi run src/upscale/benchmark/main.py
 ```
 
 The script above avoids both, which is why it is the documented way in.
 
-The server only serves `www/`. It exists because the page cannot run from `file://` — ONNX
+The server only serves `www/` and `dist/upscale/`. It exists because the page cannot run from `file://` — ONNX
 Runtime Web fetches its own `.wasm` at runtime and that fetch is blocked from a file origin.
 It sets `Cache-Control: no-store` on everything, because a benchmark that re-runs the same
 model would otherwise time the browser cache, and it registers the MIME types for `.wasm`,
@@ -173,23 +181,25 @@ local.
 ```
 desktop-streamer-ai/
 ├── pyproject.toml              deps and the pinned interpreter
-├── mock/                       make_mock_models.py, the three stand-in graphs the client runs
-├── frame_gen_intra/            summary.md only, nothing built yet
-├── frame_gen_extra/            summary.md only, nothing built yet
-└── upscale/
-    ├── summary.md              the models, the numbers, and what they do not say
-    ├── data_preprocess.ipynb   frames  → LR/HR patch pairs
-    ├── upscale_dummy.ipynb     static resampling filters, the bar to beat
-    ├── upscale_nn.ipynb        a first PyTorch model (and what not to export)
-    ├── upscale_web.ipynb       the same model, shaped for the browser
-    ├── upscale_strategies.ipynb  six architectures, one recipe, one eye-weighted metric
-    ├── upscale_geometry.ipynb  the shape to run one at: tile, batch, scale, ns per pixel
-    ├── metrics.py              how a frame is scored: Y'CbCr, luma weighted 6:1:1
-    ├── webexport.py            the export call, the tiling geometry and the op budget
-    ├── data/                   gitignored — dataset and samples
-    ├── checkpoints/            gitignored — trained weights
-    └── benchmark/
-        ├── main.py             the FastAPI server described above
-        └── www/                the page, and gitignored models/ beside it — where
-                                every export lands
+├── src/                        the source: code, notebooks, and what training leaves behind
+│   ├── mock/                   make_mock_models.py, the three stand-in graphs the client runs
+│   ├── frame_gen_intra/        summary.md only, nothing built yet
+│   ├── frame_gen_extra/        summary.md only, nothing built yet
+│   └── upscale/
+│       ├── summary.md              the models, the numbers, and what they do not say
+│       ├── data_preprocess.ipynb   frames  → LR/HR patch pairs
+│       ├── upscale_dummy.ipynb     static resampling filters, the bar to beat
+│       ├── upscale_nn.ipynb        a first PyTorch model (and what not to export)
+│       ├── upscale_web.ipynb       the same model, shaped for the browser
+│       ├── upscale_strategies.ipynb  six architectures, one recipe, one eye-weighted metric
+│       ├── upscale_geometry.ipynb  the shape to run one at: tile, batch, scale, ns per pixel
+│       ├── metrics.py              how a frame is scored: Y'CbCr, luma weighted 6:1:1
+│       ├── webexport.py            the export call, the tiling geometry and the op budget
+│       ├── data/                   gitignored — dataset and samples
+│       ├── checkpoints/            gitignored — trained weights and intermediate graphs
+│       └── benchmark/
+│           ├── main.py             the FastAPI server described above
+│           └── www/                the page
+└── dist/                       committed — the finished models, where every export lands
+    └── upscale/                *.onnx, served to the page as models/
 ```

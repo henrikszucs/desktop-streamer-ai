@@ -876,7 +876,7 @@ const load = async function() {
         ort.env.webgpu.profiling = { mode: "off", ondata: onProfilingData };
     }
 
-    // The list is built by the server out of the graphs in www/models/ at request time,
+    // The list is built by the server out of the graphs in dist/upscale/ at request time,
     // so reloading the page is enough to pick up a model a notebook has just written.
     const response = await fetch(MODELS_URL);
     if (!response.ok) {
@@ -894,7 +894,7 @@ const load = async function() {
     });
 
     if (catalogue["models"].length === 0) {
-        setStatus("no models in www/models/ - run the export cell of a model notebook, "
+        setStatus("no models in dist/upscale/ - run the export cell of a model notebook, "
             + "then reload", "error");
         return;
     }

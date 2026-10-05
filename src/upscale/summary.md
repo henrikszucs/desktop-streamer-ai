@@ -21,8 +21,9 @@ be sent fewer pixels than it displays.
 > is a tile and a rate of runs cannot compare two tile sizes.
 
 **One notebook is one model.** A notebook owns its architecture, its training, its numbers
-and its export cell, and publishes straight into `benchmark/www/models/` — so a model is
-added or dropped by adding or deleting one file, and the page shows whatever is published.
+and its export cell, and publishes straight into `dist/upscale/` at the repo root — so a
+model is added or dropped by adding or deleting one file, and the page shows whatever is
+published.
 
 ## Notebooks
 
@@ -59,14 +60,16 @@ shared, and every notebook that measures quality should measure through it; the 
 older ones still report RGB PSNR, so their tables and the newer ones are not comparable
 column for column.
 
-Each model notebook owns its own export cell and writes its `.onnx` into
-`benchmark/www/models/` through `webexport.py`. That is all publishing is: the benchmark
-server lists whatever graphs are in that folder, per request, so there is no manifest for a
+Each model notebook owns its own export cell and writes its `.onnx` into `dist/upscale/`
+at the repo root through `webexport.py`. That is all publishing is: the benchmark server
+lists whatever graphs are in that folder, per request, so there is no manifest for a
 re-export to leave stale. Twelve graphs reach the page when every notebook has been run:
 the three static filters, the bicubic-residual model, the four `upscale_web` candidates,
 and the two `upscale_strategies` publishes at two precisions each.
 
-`data/`, `checkpoints/` and `benchmark/www/models/` are gitignored. The export cells need
+`data/` and `checkpoints/` are gitignored: they are what training leaves behind. `dist/` is
+committed, because it holds only what is finished and published, and those models took
+long to train. The export cells need
 `onnx` and `onnxruntime`, which are project dependencies.
 
 Every number below is CPU, 12 threads. The installed torch is a CPU build (`2.13.0+cpu`)
@@ -564,12 +567,13 @@ A page that times a tile through a model in the browser it will actually run in.
 — it never looks at the picture.
 
 ```
-uv run upscale/benchmark/main.py   # from the repo root, then open http://127.0.0.1:8000
+uv run src/upscale/benchmark/main.py   # from the repo root, then open http://127.0.0.1:8000
 ```
 
-`main.py` serves `www/` and answers `GET /api/models`; the page cannot run from `file://`
-because ONNX Runtime Web fetches its own `.wasm` at runtime. **The dropdown is built from the
-folder, not from a file describing it.** Every request walks `www/models/*.onnx` and reads
+`main.py` serves `www/`, serves `dist/upscale/` under `models/`, and answers
+`GET /api/models`; the page cannot run from `file://` because ONNX Runtime Web fetches its
+own `.wasm` at runtime. **The dropdown is built from the folder, not from a file describing
+it.** Every request walks `dist/upscale/*.onnx` and reads
 each graph — shapes, operators, parameter count, size, and the halo, which is whatever the
 input carries beyond its step — parsing a model again only when its mtime or size has
 changed. The label and the desktop `cpu_ms` are the only two things a graph cannot state, and
@@ -676,7 +680,8 @@ float16 — the CPU provider has no half kernels for these ops, casts to float32
 same arithmetic, so `cpu_ms` shows fp16 as *slightly slower* while the browser shows it 27%
 faster. A precision is not fast or slow on its own; a provider's kernels for it are.
 
-`www/models/` is gitignored: run a notebook's export cell to fill it.
+`dist/` is committed, so the page has models on a fresh clone; a notebook's export cell
+replaces the ones it owns.
 
 ## Where that leaves it
 

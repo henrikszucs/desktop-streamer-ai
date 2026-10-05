@@ -2,9 +2,8 @@
 __pycache__/
 .ipynb_checkpoints/
 
-# local data, never committed
-*/data/
-*/checkpoints/
-*/benchmark/www/models/
+# local data, never committed - dist/ is, since it holds the finished models
+src/*/data/
+src/*/checkpoints/
 
 .DS_Store

@@ -51,8 +51,8 @@ prices for whatever it is built from; these are the prices.
 Run from the repo root and the files land where the client reads them, in desktop-streamer
 checked out beside this repo - or give the folder to write to:
 
-    uv run mock/make_mock_models.py
-    uv run mock/make_mock_models.py <models folder>
+    uv run src/mock/make_mock_models.py
+    uv run src/mock/make_mock_models.py <models folder>
 """
 
 # internal
@@ -67,7 +67,7 @@ from onnx import TensorProto, helper, numpy_helper
 # where the web client reads them: media, since a graph is an asset like an image. The
 # client is desktop-streamer, checked out beside this repo; a folder given on the command
 # line is written to instead
-CLIENT_DIR = Path(__file__).resolve().parents[2] / "desktop-streamer"
+CLIENT_DIR = Path(__file__).resolve().parents[3] / "desktop-streamer"
 OUT_DIR = (Path(sys.argv[1]) if len(sys.argv) > 1
            else CLIENT_DIR / "src" / "client" / "web" / "media" / "models")
 OPSET = 17

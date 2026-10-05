@@ -1,20 +1,20 @@
 """Server for the upscaling speed benchmark page.
 
-    uv run upscale/benchmark/main.py        # then open http://127.0.0.1:8000
+    uv run src/upscale/benchmark/main.py    # then open http://127.0.0.1:8000
 
 Needs fastapi[standard], which is what brings uvicorn along. It serves ./www, and it
 answers GET /api/models with the list of models the page fills its dropdown from. It
 exists because the page cannot run from file:// - ONNX Runtime Web fetches its own .wasm
 at runtime, and a fetch from a file:// origin is blocked.
 
-The model list is built from the graphs in www/models/ on every request, not from anything
+The model list is built from the graphs in dist/upscale/ on every request, not from anything
 a notebook wrote beside them. Almost all of it is already in the file - the input and
 output shapes, the operators, the parameter count, the size on disk - and a manifest
 repeating that is a second copy to keep in step, which is a copy that goes stale the first
 time a model is re-exported and something else is not. What genuinely cannot be read out
 of a graph is the label a human chose for it and the desktop CPU time a notebook measured;
 those ride in the model's own `metadata_props`, so a model is still one file. Drop an
-.onnx into www/models/ by hand and it appears in the dropdown; delete one and it goes.
+.onnx into dist/upscale/ by hand and it appears in the dropdown; delete one and it goes.
 """
 
 # internal
@@ -37,7 +37,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import webexport
 
 WWW = Path(__file__).parent / "www"
-MODELS = WWW / "models"
+# The page fetches models/<file>, served out of dist/ rather than out of www/, so the
+# finished models sit apart from the source that measures them.
+MODELS = webexport.MODELS_DIR
 
 # mimetypes reads the Windows registry, where .js has been known to come back as
 # text/plain and .wasm as nothing at all. Either one breaks the page, so the types that
@@ -173,7 +175,7 @@ def read_model(path):
 
 
 def list_models():
-    """Every model in www/models/, cheapest baseline first."""
+    """Every model in dist/upscale/, cheapest baseline first."""
     models = []
     for path in sorted(MODELS.glob("*.onnx")):
         stat = path.stat()
@@ -231,6 +233,7 @@ async def no_store(request, call_next):
 
 # Mounted last: a mount at "/" matches everything, so every route above has to be
 # declared before it to be reachable at all.
+app.mount("/models", StaticFiles(directory=MODELS, check_dir=False), name="models")
 app.mount("/", StaticFiles(directory=WWW, html=True), name="www")
 
 

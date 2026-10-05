@@ -1,7 +1,7 @@
 """Shared ONNX export for the browser benchmark.
 
 One notebook is one model, and every model notebook ends with an export cell that writes
-its graph straight into `benchmark/www/models/` - the folder the benchmark page reads.
+its graph straight into `dist/upscale/` at the repo root - the folder the benchmark page reads.
 Nothing else is written. There is no manifest, because the server builds the model list
 out of the graphs themselves on every request (`benchmark/main.py`): the shapes, the
 operators, the parameter count and the size on disk are already in the file, and a second
@@ -11,7 +11,7 @@ The two things a graph cannot state - the label a human chose for it, and the de
 time this notebook measured - go into the model's own `metadata_props`, so a model stays
 one file that can be copied, deleted or dropped in by hand without anything else knowing.
 
-Usage, from a notebook whose working directory is `upscale/`:
+Usage, from a notebook whose working directory is `src/upscale/`:
 
     import webexport
     info = webexport.export(model, "upscale_name_tile128.onnx", size, label="name", halo=4)
@@ -33,9 +33,10 @@ import numpy as np
 import onnx
 import torch
 
-# Where the page looks. Exports land here directly, and the server lists whatever it
-# finds, so publishing a model is writing the file and nothing else.
-MODELS_DIR = Path("benchmark/www/models")
+# Where the finished models live - `dist/upscale/` at the repo root, wherever the notebook
+# runs from - and where the page looks. Exports land here directly, and the server lists
+# whatever it finds, so publishing a model is writing the file and nothing else.
+MODELS_DIR = Path(__file__).resolve().parents[2] / "dist" / "upscale"
 
 # The tile the page benchmarks: a model keeps this many LR pixels per step, and takes
 # `TILE_STEP + 2 * halo` in, so the halo it needs is part of its own geometry. It is the
