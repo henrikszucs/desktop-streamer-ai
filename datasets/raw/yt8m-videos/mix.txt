@@ -1,0 +1,147 @@
+# The default YouTube-8M category mix for yt8m-videos, tuned for remote desktop: what a
+# streamed screen shows most - desktops, software, games - plus the video people watch on it,
+# plus enough camera footage that nothing is out of distribution.
+#
+#     uv run datasets/download.py yt8m-videos --total 1000
+#
+# One `WEIGHT  CATEGORY` per line (a name from --categories); weights are percentages of
+# --total. Below about 1000 the 0.25-0.5 weights round to no videos. The labels are
+# per video, so "Microsoft Windows" includes some phone-filmed monitors - filter after.
+
+# == Computer - 50 =========================================================================
+
+# -- Desktop and software use - 15: real UIs, text, windows, browsers, slides
+3.5   Microsoft Windows
+2     Personal computer
+1     Computer
+1.5   Website
+1     Web page
+1     Screencast
+0.5   Screenshot
+0.5   Office
+0.5   Font
+0.5   Text messaging
+1     Map
+1     Slide show
+1     Synthesia
+
+# -- Creative software - 5: viewports, timelines, tool panels, rendered 3D
+1.5   Cinema 4D
+1.5   Blender
+1     Digital painting
+0.5   Sprite (computer graphics)
+0.5   Split screen (computer graphics)
+
+# -- Phones and tablets - 5: app UIs, mirrored and filmed screens
+1.5   Smartphone
+1     IPhone
+1     Tablet computer
+0.5   IPad
+0.5   Samsung Galaxy
+0.5   Google Nexus
+
+# -- PC games - 15: HUD-heavy genres people play remotely - MOBA, MMO, RTS, FPS, sims, 2D
+2     Minecraft
+1.5   League of Legends
+1     Dota 2
+1.5   World of Warcraft
+1     RuneScape
+1.5   Strategy video game
+0.5   StarCraft II: Wings of Liberty
+0.5   Total War (series)
+1     Counter-Strike (video game)
+1     First-person shooter
+0.5   The Sims
+0.5   Farming Simulator
+0.5   Euro Truck Simulator 2
+0.5   Microsoft Flight Simulator
+0.5   Garry's Mod
+0.5   Terraria
+0.5   Diablo III
+
+# -- Console and general games - 7: cinematic 3D, fast motion
+2     Video game
+1     Grand Theft Auto V
+1     Call of Duty
+1     Action-adventure game
+0.5   Sports game
+0.5   Fighting game
+0.5   Forza (series)
+0.5   Super Smash Bros.
+
+# -- 2D, retro and casual games - 3: sprites, flat colour, pixel art
+0.5   Arcade game
+0.5   Touhou Project
+0.5   Plants vs. Zombies
+0.5   Angry Birds
+0.5   Candy Crush Saga
+0.25  Geometry Dash
+0.25  Tetris
+
+# == Movies and TV - 30 ====================================================================
+
+# -- Live action - 12: film grain, letterboxing, overlays and tickers
+5     Trailer (promotion)
+2     Movieclips
+1.5   Television advertisement
+1     Sitcom
+1     Comedy (drama)
+1     News program
+0.5   Television
+
+# -- Animation - 10: hard edges and flat fills, the closest video gets to UI content
+4     Cartoon
+3     Animation
+1     Manga
+1     Cartoon Network
+0.5   Clay animation
+0.5   Talking Tom and Friends
+
+# -- Music and live - 8: stage lighting, fast cuts, sports graphics
+4     Music video
+2     Concert
+1     Highlight film
+1     Dance
+
+# == Other - 20: camera footage across YouTube, so the model sees the rest ==================
+
+# -- People - 3
+1.5   Cosmetics
+1     Hair
+0.5   Nail art
+
+# -- Food - 2.5
+1.5   Cooking
+1     Recipe
+
+# -- Vehicles - 4
+1.5   Car
+1     Dashcam
+1     Aircraft
+0.5   Train
+
+# -- Sports - 2.5
+1     Basketball
+0.5   Skateboard
+0.5   Surfing
+0.5   Gym
+
+# -- Nature and animals - 3
+0.5   Dog
+0.5   Cat
+0.5   Bird
+0.5   Aquarium
+0.5   Weather
+0.5   Beach
+
+# -- Hobbies - 3.5
+1     Guitar
+0.5   Piano
+0.5   Lego
+0.5   Toy
+1     Drawing
+
+# -- Board and card games - 1.5: often a digital board on screen
+0.5   Chess
+0.5   Poker
+0.5   Board game

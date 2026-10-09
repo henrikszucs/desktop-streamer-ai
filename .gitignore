@@ -2,8 +2,16 @@
 __pycache__/
 .ipynb_checkpoints/
 
-# local data, never committed - dist/ is, since it holds the finished models
+# local data, never committed - dist/ is, since it holds the finished models. Under
+# datasets/ only download.py and the YouTube category mix are; raw/ and every problem's
+# folder beside it are data.
 src/*/data/
 src/*/checkpoints/
+datasets/*/
+!datasets/raw/
+datasets/raw/*
+!datasets/raw/yt8m-videos/
+datasets/raw/yt8m-videos/*
+!datasets/raw/yt8m-videos/mix.txt
 
 .DS_Store

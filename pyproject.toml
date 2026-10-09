@@ -14,6 +14,8 @@ dependencies = [
     "onnx>=1.22.0",
     "onnxruntime>=1.29.0",
     "fastapi[standard]>=0.141.1",
+    "yt-dlp[default]>=2026.8.19",
+    "deno>=2.9.7",
 ]
 [[tool.uv.index]]
 name = "pytorch-cu132"

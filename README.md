@@ -8,7 +8,10 @@ its `src/` calls it yet. It used to be that repo's `model/` folder, and its hist
 Two top-level folders. **`src/`** is the source: the code, the notebooks that train and
 measure, and the data and checkpoints they leave behind. **`dist/`** is the output: the
 finished models, one subfolder per problem, written by the notebooks' export cells and
-nothing else.
+nothing else. Beside them, **`datasets/`** holds the data, never committed: the public
+benchmarks every problem can draw on in `datasets/raw/`, downloaded by
+[`datasets/download.py`](datasets/download.py), and beside it one folder per problem for what
+that problem's preprocessing makes of them (`datasets/upscale/`).
 
 Three problems, one folder each under `src/`, each with its own `summary.md` - and beside
 them `src/mock/`, which is not a problem but the three stand-ins the client runs today (see
@@ -73,9 +76,10 @@ manifest: the server builds the dropdown out of the graphs in that folder on eve
 so dropping a file in or deleting one is the whole operation, no restart and no re-export of
 anything else. Run whichever notebooks you want on the page:
 
-- `src/upscale/data_preprocess.ipynb` — builds the patch dataset, and has to run first. With
-  `data/raw/` empty it synthesises desktop-like frames, so it works before any real data
-  exists. It is not a model and exports nothing.
+- `src/upscale/data_preprocess.ipynb` — builds the patch dataset into `datasets/upscale/`,
+  and has to run first. With no dataset downloaded and nothing in `datasets/raw/captures/`
+  it trains on synthesised desktop-like frames, so it works before any real data exists. It
+  is not a model and exports nothing.
 - `src/upscale/upscale_dummy.ipynb` — the static baseline: the three filters ONNX can express
   as a `Resize` node, nearest, bilinear and bicubic. The bar a learned model must beat.
 - `src/upscale/upscale_nn.ipynb` — the bicubic-residual model.
@@ -181,6 +185,13 @@ local.
 ```
 desktop-streamer-ai/
 ├── pyproject.toml              deps and the pinned interpreter
+├── datasets/                   gitignored but for the script and the mix — DATASETS_DIR moves it
+│   ├── download.py             uv run datasets/download.py --list; --dest for another drive
+│   ├── raw/                    the downloads: DIV2K, Flickr2K, Set5…, UVG, YouTube-8M + its videos
+│   │   ├── <name>/             one folder per dataset, with its train.txt and test.txt
+│   │   ├── yt8m-videos/mix.txt committed — the YouTube category mix
+│   │   └── captures/           screenshots of your own
+│   └── upscale/                data_preprocess.ipynb's patch pairs, manifest.json, synthetic/
 ├── src/                        the source: code, notebooks, and what training leaves behind
 │   ├── mock/                   make_mock_models.py, the three stand-in graphs the client runs
 │   ├── frame_gen_intra/        summary.md only, nothing built yet
@@ -194,8 +205,10 @@ desktop-streamer-ai/
 │       ├── upscale_strategies.ipynb  six architectures, one recipe, one eye-weighted metric
 │       ├── upscale_geometry.ipynb  the shape to run one at: tile, batch, scale, ns per pixel
 │       ├── metrics.py              how a frame is scored: Y'CbCr, luma weighted 6:1:1
+│       ├── sources.py              reads the downloaded datasets back
+│       ├── degrade.py              the stream's degradation: downscale, 4:2:0, H.264
 │       ├── webexport.py            the export call, the tiling geometry and the op budget
-│       ├── data/                   gitignored — dataset and samples
+│       ├── data/                   gitignored — samples the notebooks write
 │       ├── checkpoints/            gitignored — trained weights and intermediate graphs
 │       └── benchmark/
 │           ├── main.py             the FastAPI server described above

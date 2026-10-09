@@ -29,10 +29,14 @@ published.
 
 Run in order, from this folder:
 
-- `data_preprocess.ipynb` — source frames from `data/raw/` (or synthesised desktop-like
-  frames when it is empty) → bicubic ×2 degradation → aligned LR/HR patch pairs, flat
-  patches dropped by luma variance, split by *source frame* rather than by patch → four
-  `uint8` `.npy` arrays and a `manifest.json` in `data/processed/`.
+- `data_preprocess.ipynb` — source frames from the downloaded datasets (DIV2K, Flickr2K,
+  YouTube sequences, read by `sources.py`) and `datasets/raw/captures/` (synthesised
+  desktop-like frames when all of that is empty) → the stream's own ×2 degradation from `degrade.py`: downscale,
+  4:2:0, H.264 at a random constant bitrate, decode, drawn per source → aligned LR/HR patch
+  pairs, flat patches dropped by luma variance, split by *source* (an image, or a whole
+  video) rather than by patch → four `uint8` `.npy` arrays and a `manifest.json` in
+  `datasets/upscale/` that records each source's degradation. The results below were
+  measured on the earlier clean bicubic pairs (`DEGRADATION = "clean"` comes close).
 - `upscale_dummy.ipynb` — **static methods only.** Seven of them: nearest, box, bilinear,
   hamming, bicubic, Lanczos, and bicubic followed by an unsharp mask. No training; it
   measures quality and runtime, hands out the bar, and exports the three ONNX can express
