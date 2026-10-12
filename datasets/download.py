@@ -44,7 +44,7 @@ sharded, because the frame-level partition is over a terabyte.
 `yt8m-videos` is what YouTube-8M is good for here: its labels, used as an index of YouTube.
 `--categories [TEXT]` lists the 3862 categories (name, vertical, train video count), and each
 `--category NAME=N` asks for N videos from one, by name or index - the mix is yours. Without
-`--category`, the `WEIGHT CATEGORY` lines of `--mix` (default `raw/yt8m-videos/mix.txt`, a
+`--category`, the `WEIGHT CATEGORY` lines of `--mix` (default `yt8m-mix.txt` beside this script, a
 remote-desktop mix: half computer, then film and TV, then everything else) share `--total`
 videos. Google
 publishes each category's videos as 4-character pseudo-IDs and a lookup from those to
@@ -543,9 +543,9 @@ def main() -> None:
                         help="list the YouTube-8M categories (name or vertical containing TEXT) and exit")
     parser.add_argument("--category", action="append", default=[], metavar="NAME=N",
                         help="yt8m-videos: N videos from this category (name or index); repeat for a mix")
-    parser.add_argument("--mix", type=Path, default=HERE / "raw" / "yt8m-videos" / "mix.txt",
+    parser.add_argument("--mix", type=Path, default=HERE / "yt8m-mix.txt",
                         help="yt8m-videos without --category: a file of WEIGHT CATEGORY lines "
-                             "(default raw/yt8m-videos/mix.txt beside this script)")
+                             "(default yt8m-mix.txt beside this script)")
     parser.add_argument("--total", type=int, default=100,
                         help="yt8m-videos with --mix: how many videos the weights share (default 100)")
     parser.add_argument("--min-height", type=int, default=720,

@@ -187,9 +187,9 @@ desktop-streamer-ai/
 ├── pyproject.toml              deps and the pinned interpreter
 ├── datasets/                   gitignored but for the script and the mix — DATASETS_DIR moves it
 │   ├── download.py             uv run datasets/download.py --list; --dest for another drive
+│   ├── yt8m-mix.txt            the YouTube-8M category mix yt8m-videos fetches by default
 │   ├── raw/                    the downloads: DIV2K, Flickr2K, Set5…, UVG, YouTube-8M + its videos
 │   │   ├── <name>/             one folder per dataset, with its train.txt and test.txt
-│   │   ├── yt8m-videos/mix.txt committed — the YouTube category mix
 │   │   └── captures/           screenshots of your own
 │   └── upscale/                data_preprocess.ipynb's patch pairs, manifest.json, synthetic/
 ├── src/                        the source: code, notebooks, and what training leaves behind
