@@ -24,15 +24,21 @@ Mbit/s, 90% of it for the picture - is 0.46 at 960x540 and 30 fps, the frame a 1
 screen is sent as when the client upscales x2; its 200 kbit/s floor is 0.013. `sample`
 draws from that range, log-uniform, so a low bandwidth line is as common as a fast one.
 
-A single image is held as a still for `still` frames and the last one kept: the first frame
-of a GOP is a keyframe squeezed into a two-frame buffer, and a static screen sharpens
-frame by frame after it, so `still` = 1 is the worst picture a stream shows and `fps` is
-one that has settled. Frames (T, H, W, 3) are encoded as the video they are, motion and
-all, and come back one for one.
+`deblock` turns x264's loop filter back on, which `ultrafast` leaves off. The libx264 line
+shows hard edges on the block grid; the NVENC and AMF lines a host with a GPU takes always
+filter them, and their picture sits between the two. Drawing it per sample covers both
+kinds of host with the one encoder that runs everywhere.
+
+Frames (T, H, W, 3) are encoded as the video they are, motion and all, and come back one
+for one, the first of every second a keyframe squeezed into a two-frame buffer. A single
+image (H, W, 3) is one frame, so it comes back as that keyframe - the worst picture a
+stream shows. To see a still image as a stream does, motion and all, make a clip of it
+first (`motion.py`).
 
 `bpp=None` skips the codec and leaves the downscale and the 4:2:0 round trip - the clean
-pair the notebooks trained on until now, minus its full resolution chroma. `scale=1` skips
-the downscale instead, which is the stream degradation for a model that does not upscale.
+pair the notebooks trained on until now, minus its full resolution chroma, and what a fast
+line looks like once the codec has nothing left to throw away. `scale=1` skips the
+downscale instead, which is the stream degradation for a model that does not upscale.
 """
 
 import math
@@ -56,23 +62,23 @@ class Degradation:
     filter: str = "bicubic"
     bpp: float | None = STREAM_BPP  # None: no codec
     fps: float = 30
-    still: int = 1  # a single image: frames it is held for, the last one kept
+    deblock: bool = False  # x264's loop filter, as the hardware encoders run it
 
     def as_dict(self):
         return asdict(self)
 
 
-def sample(rng, scale=2, fps=30, bpp_range=BPP_RANGE):
-    """A random degradation: any filter, a log-uniform bitrate, a still anywhere from the
-    keyframe to one second after it. `rng` is a `numpy.random.Generator`."""
+def sample(rng, scale=2, fps=30, bpp_range=BPP_RANGE, clean=0.1, deblock=0.5):
+    """A random degradation: any filter, a log-uniform bitrate, the loop filter on for a
+    `deblock` share - or, for a `clean` share, no codec at all. `rng` is a
+    `numpy.random.Generator`."""
     low, high = (math.log(b) for b in bpp_range)
-    return Degradation(
-        scale=scale,
-        filter=str(rng.choice(FILTERS)),
-        bpp=float(math.exp(rng.uniform(low, high))),
-        fps=fps,
-        still=int(rng.integers(1, round(fps) + 1)),
-    )
+    filter = str(rng.choice(FILTERS))
+    bpp = float(math.exp(rng.uniform(low, high)))
+    filtered = bool(rng.random() < deblock)
+    if rng.random() < clean:
+        return Degradation(scale=scale, filter=filter, bpp=None, fps=fps)
+    return Degradation(scale=scale, filter=filter, bpp=bpp, fps=fps, deblock=filtered)
 
 
 def crop(frames, scale):
@@ -104,8 +110,6 @@ def degrade(hr, degradation=Degradation()):
     d = degradation
     hr = crop(np.asarray(hr, dtype=np.uint8), d.scale)
     frames = hr[None] if hr.ndim == 3 else hr
-    if hr.ndim == 3 and d.bpp is not None:
-        frames = np.repeat(frames, d.still, axis=0)
     count, height, width = frames.shape[:3]
     lr_width, lr_height = width // d.scale, height // d.scale
 
@@ -119,10 +123,13 @@ def degrade(hr, degradation=Degradation()):
         stream = ffmpeg([*raw, "-vf", down,
                           "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-profile:v", "high",
                           "-b:v", f"{kbps:.0f}k", "-maxrate", f"{kbps:.0f}k", "-bufsize", f"{2 * kbps / d.fps:.0f}k",
-                          "-g", gop, "-keyint_min", gop, "-bf", "0", "-f", "h264"], frames.tobytes())
-        out = ffmpeg(["-f", "h264", "-i", "pipe:0", "-vf", FROM_YUV, "-f", "rawvideo"], stream)
+                          "-g", gop, "-keyint_min", gop, "-bf", "0",
+                          *(["-deblock", "0:0"] if d.deblock else []), "-f", "h264"], frames.tobytes())
+        # one frame out per frame in: a raw H.264 stream has no timestamps, and the decoder
+        # would otherwise re-time it and duplicate frames at some rates (12 fps doubles)
+        out = ffmpeg(["-f", "h264", "-i", "pipe:0", "-vf", FROM_YUV, "-fps_mode", "passthrough", "-f", "rawvideo"], stream)
 
     lr = np.frombuffer(out, dtype=np.uint8).reshape(-1, lr_height, lr_width, 3)
     if len(lr) != count:
         raise RuntimeError(f"ffmpeg returned {len(lr)} frames for {count}")
-    return hr, (lr[-1] if hr.ndim == 3 else lr)
+    return hr, (lr[0] if hr.ndim == 3 else lr)

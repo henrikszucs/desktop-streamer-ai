@@ -31,12 +31,21 @@ Run in order, from this folder:
 
 - `data_preprocess.ipynb` — source frames from the downloaded datasets (DIV2K, Flickr2K,
   YouTube sequences, read by `sources.py`) and `datasets/raw/captures/` (synthesised
-  desktop-like frames when all of that is empty) → the stream's own ×2 degradation from `degrade.py`: downscale,
-  4:2:0, H.264 at a random constant bitrate, decode, drawn per source → aligned LR/HR patch
-  pairs, flat patches dropped by luma variance, split by *source* (an image, or a whole
-  video) rather than by patch → four `uint8` `.npy` arrays and a `manifest.json` in
-  `datasets/upscale/` that records each source's degradation. The results below were
-  measured on the earlier clean bicubic pairs (`DEGRADATION = "clean"` comes close).
+  desktop-like frames when all of that is empty), every one made a clip: a YouTube
+  sequence as it is, an image as a second of a 1280×720 window sliding, zooming or holding
+  still over it (`motion.py`) → the stream's own ×2 degradation from `degrade.py` on the
+  whole frame: downscale, 4:2:0, H.264 at a random constant bitrate with x264's loop filter
+  on for half of them, no codec for a tenth, decode, drawn per source → patches at random
+  even places, each held still for 8 frames, a 72 px LR input (64 px core + a halo of 4)
+  over a 128 px HR target, flat ones dropped by luma variance, split by *source* (an image,
+  or a whole video) rather than by patch → four `uint8` `.npy` arrays of
+  `(patches, frames, h, w, 3)` and a `manifest.json` in `datasets/upscale/` that records
+  each source's motion and degradation. `patches.py` reads it back for the model notebooks,
+  one frame a sample, and they trim the halo off the output before the loss and every
+  score. The results below were measured on the earlier clean bicubic pairs of 64 px
+  patches without a halo, so none of them carries over: on a 40-source test set, the
+  32-16 model trained 100 epochs gains +1.0 dB over bicubic without the codec and +0.16 dB
+  with it.
 - `upscale_dummy.ipynb` — **static methods only.** Seven of them: nearest, box, bilinear,
   hamming, bicubic, Lanczos, and bicubic followed by an unsharp mask. No training; it
   measures quality and runtime, hands out the bar, and exports the three ONNX can express

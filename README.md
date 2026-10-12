@@ -198,7 +198,7 @@ desktop-streamer-ai/
 │   ├── frame_gen_extra/        summary.md only, nothing built yet
 │   └── upscale/
 │       ├── summary.md              the models, the numbers, and what they do not say
-│       ├── data_preprocess.ipynb   frames  → LR/HR patch pairs
+│       ├── data_preprocess.ipynb   frames  → LR/HR patch clips, a halo around the LR side
 │       ├── upscale_dummy.ipynb     static resampling filters, the bar to beat
 │       ├── upscale_nn.ipynb        a first PyTorch model (and what not to export)
 │       ├── upscale_web.ipynb       the same model, shaped for the browser
@@ -207,6 +207,8 @@ desktop-streamer-ai/
 │       ├── metrics.py              how a frame is scored: Y'CbCr, luma weighted 6:1:1
 │       ├── sources.py              reads the downloaded datasets back
 │       ├── degrade.py              the stream's degradation: downscale, 4:2:0, H.264
+│       ├── motion.py               a still image as a moving clip: slide, zoom or hold
+│       ├── patches.py              reads the patch set back for the model notebooks
 │       ├── webexport.py            the export call, the tiling geometry and the op budget
 │       ├── data/                   gitignored — samples the notebooks write
 │       ├── checkpoints/            gitignored — trained weights and intermediate graphs

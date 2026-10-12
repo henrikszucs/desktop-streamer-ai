@@ -25,6 +25,7 @@ about it anywhere else.
 """
 
 # internal
+import copy
 import math
 from pathlib import Path
 
@@ -228,8 +229,9 @@ def export(model, filename, size, label=None, halo=None, step=TILE_STEP, batch=1
     height, width = as_size(size)
     models_dir.mkdir(parents=True, exist_ok=True)
     path = models_dir / filename
+    # a copy, so the caller's model stays on its device and in its mode
     torch.onnx.export(
-        model.to("cpu").eval(), (torch.randn(batch, 3, height, width),), str(path),
+        copy.deepcopy(model).to("cpu").eval(), (torch.randn(batch, 3, height, width),), str(path),
         opset_version=opset, input_names=["input"], output_names=["output"],
         dynamic_axes={"input": {0: "batch", 2: "height", 3: "width"},
                       "output": {0: "batch", 2: "height", 3: "width"}} if dynamic else None,
