@@ -476,7 +476,8 @@ def get_yt8m_videos(folder: Path, specs: list[str], min_height: int, max_height:
                         continue
                     if not info:
                         shutil.rmtree(sub / video, ignore_errors=True)  # a sequence source's .part
-                        if "confirm you" in reason or "429" in reason:
+                        # "confirm you're not a bot" is a block; "confirm your age" is one video
+                        if "not a bot" in reason or "429" in reason:
                             sys.exit(f"  YouTube is refusing requests ({reason}) - wait, then re-run")
                         print(f"  {video}  skipped: {reason}")
                         # a 403 that outlasts the retries is still no proof the video is gone - a
