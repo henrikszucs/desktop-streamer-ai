@@ -34,7 +34,7 @@ work in between, computing something that leaves the picture right (an identity 
 and a bilinear ×2; the mean of two frames; their linear extrapolation), so the client
 pipeline could be built and timed before any trained weights exist. The client never hands a
 graph a whole frame: it cuts it into 328×188 tiles (a 320×180 step with a 4 pixel halo, the
-geometry `src/upscale/webexport.py` measured), runs every tile of a frame as one batch, and
+geometry `src/upscale/helpers/tiles.py` measured), runs every tile of a frame as one batch, and
 merges the kept centres back - so a model has to be right on a tile of that size, read no
 further than the halo, and take a batch. The generator's docstring holds what the runtime's
 WebGPU provider charges for the operators the mocks could have been built from, which is
@@ -76,26 +76,30 @@ manifest: the server builds the dropdown out of the graphs in that folder on eve
 so dropping a file in or deleting one is the whole operation, no restart and no re-export of
 anything else. Run whichever notebooks you want on the page:
 
-- `src/upscale/data_preprocess.ipynb` — builds the patch dataset into `datasets/upscale/`,
+- `src/upscale/0_data_preprocess.ipynb` — builds the patch dataset into `datasets/upscale/`,
   and has to run first. With no dataset downloaded and nothing in `datasets/raw/captures/`
   it trains on synthesised desktop-like frames, so it works before any real data exists. It
   is not a model and exports nothing.
-- `src/upscale/upscale_dummy.ipynb` — the static baseline: the three filters ONNX can express
+- `src/upscale/1_upscale_dummy.ipynb` — the static baseline: the three filters ONNX can express
   as a `Resize` node, nearest, bilinear and bicubic. The bar a learned model must beat.
-- `src/upscale/upscale_nn.ipynb` — the bicubic-residual model.
-- `src/upscale/upscale_web.ipynb` — the same model shaped for the browser, published at three
+- `src/upscale/2_upscale_nn.ipynb` — the bicubic-residual model.
+- `src/upscale/3_upscale_web.ipynb` — the same model shaped for the browser, published at three
   precisions and two tile sizes.
-- `src/upscale/upscale_strategies.ipynb` — six architectures under one recipe, scored by the
+- `src/upscale/4_upscale_strategies.ipynb` — six architectures under one recipe, scored by the
   eye-weighted metric, publishing the two that win.
-- `src/upscale/upscale_geometry.ipynb` — not a model: the *shape* one runs at. Sweeps tile size,
+- `src/upscale/5_upscale_geometry.ipynb` — not a model: the *shape* one runs at. Sweeps tile size,
   batch and scale factor, charges everything in nanoseconds per output pixel, and publishes
   a family of geometries for the page to measure on whatever GPU is in front of it.
+- `src/upscale/6_upscale_reparam.ipynb` — the selected model, trained on the stream-degraded
+  data and published at the 320×180 step a client runs, with bilinear and bicubic beside it.
 
-`webexport.py` beside them is the export call they share, and the one place the tile step
-and the WebGPU operator budget are written down — `main.py` imports it rather than keeping a
-second copy of either. `metrics.py` is the other shared file: **how a frame is scored**, in
-Y'CbCr with luma weighted six times either chroma channel, because that is the ratio an eye
-reads them at. Every notebook that measures quality should be measuring through it.
+The code the notebooks share lives in `src/upscale/helpers/`: `models.py` (the bicubic skip
+and the models built on it), `training.py` (loading the patches, the training loop, scoring,
+checkpoints), `speed.py` (timing), `metrics.py` (**how a frame is scored**, in Y'CbCr with
+luma weighted six times either chroma channel, because that is the ratio an eye reads them
+at), `tiles.py` (the tile geometry: how a frame is cut into tiles and what each costs) and
+`webexport.py` (the export call, and the one place the tile step and the WebGPU operator
+budget are written down — `main.py` imports it rather than keeping a second copy).
 
 Almost everything the dropdown shows is read back out of the graph: the input and output
 shapes, the operators, the parameter count, the size on disk, and the halo, which is
@@ -191,27 +195,33 @@ desktop-streamer-ai/
 │   ├── raw/                    the downloads: DIV2K, Flickr2K, Set5…, UVG, YouTube-8M + its videos
 │   │   ├── <name>/             one folder per dataset, with its train.txt and test.txt
 │   │   └── captures/           screenshots of your own
-│   └── upscale/                data_preprocess.ipynb's patch pairs, manifest.json, synthetic/
+│   └── upscale/                0_data_preprocess.ipynb's patch pairs, manifest.json, synthetic/
 ├── src/                        the source: code, notebooks, and what training leaves behind
 │   ├── mock/                   make_mock_models.py, the three stand-in graphs the client runs
 │   ├── frame_gen_intra/        summary.md only, nothing built yet
 │   ├── frame_gen_extra/        summary.md only, nothing built yet
 │   └── upscale/
-│       ├── summary.md              the models, the numbers, and what they do not say
-│       ├── data_preprocess.ipynb   frames  → LR/HR patch clips, a halo around the LR side
-│       ├── upscale_dummy.ipynb     static resampling filters, the bar to beat
-│       ├── upscale_nn.ipynb        a first PyTorch model (and what not to export)
-│       ├── upscale_web.ipynb       the same model, shaped for the browser
-│       ├── upscale_strategies.ipynb  six architectures, one recipe, one eye-weighted metric
-│       ├── upscale_geometry.ipynb  the shape to run one at: tile, batch, scale, ns per pixel
-│       ├── metrics.py              how a frame is scored: Y'CbCr, luma weighted 6:1:1
-│       ├── sources.py              reads the downloaded datasets back
-│       ├── degrade.py              the stream's degradation: downscale, 4:2:0, H.264
-│       ├── motion.py               a still image as a moving clip: slide, zoom or hold
-│       ├── patches.py              reads the patch set back for the model notebooks
-│       ├── webexport.py            the export call, the tiling geometry and the op budget
-│       ├── data/                   gitignored — samples the notebooks write
-│       ├── checkpoints/            gitignored — trained weights and intermediate graphs
+│       ├── summary.md                the models, the numbers, and what they do not say
+│       ├── 0_data_preprocess.ipynb   frames → LR/HR patch clips, a halo around the LR side
+│       ├── 1_upscale_dummy.ipynb     static resampling filters, the bar to beat
+│       ├── 2_upscale_nn.ipynb        a first PyTorch model (and what not to export)
+│       ├── 3_upscale_web.ipynb       the same model, shaped for the browser
+│       ├── 4_upscale_strategies.ipynb  six architectures, one recipe, one eye-weighted metric
+│       ├── 5_upscale_geometry.ipynb  the shape to run one at: tile, batch, scale, ns per pixel
+│       ├── 6_upscale_reparam.ipynb   the selected model, trained on the stream, published at 320x180
+│       ├── helpers/                  modules the notebooks import, never run on their own
+│       │   ├── sources.py            reads the downloaded datasets back
+│       │   ├── motion.py             a still image as a moving clip: slide, zoom or hold
+│       │   ├── degrade.py            the stream's degradation: downscale, 4:2:0, H.264
+│       │   ├── patches.py            reads the patch set back for the model notebooks
+│       │   ├── models.py             the bicubic skip and the models built on it
+│       │   ├── training.py           loaders, the training loop, scoring, checkpoints
+│       │   ├── metrics.py            how a frame is scored: Y'CbCr, luma weighted 6:1:1
+│       │   ├── speed.py              timing and multiply-accumulate counts
+│       │   ├── tiles.py              the tiling geometry: step, halo, kept, which tile to run
+│       │   └── webexport.py          the export call, the tile step and the op budget
+│       ├── data/                     gitignored — samples the notebooks write
+│       ├── checkpoints/              gitignored — trained weights and intermediate graphs
 │       └── benchmark/
 │           ├── main.py             the FastAPI server described above
 │           └── www/                the page

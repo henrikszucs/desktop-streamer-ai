@@ -34,7 +34,7 @@ from fastapi.staticfiles import StaticFiles
 
 # first-party
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import webexport
+from helpers import webexport
 
 WWW = Path(__file__).parent / "www"
 # The page fetches models/<file>, served out of dist/ rather than out of www/, so the

@@ -23,7 +23,7 @@ wrong prior for this.
 
 ## Shape it would take
 
-The same shape as `../upscale/`: a `data_preprocess.ipynb` that cuts training examples out
+The same shape as `../upscale/`: a `0_data_preprocess.ipynb` that cuts training examples out
 of source frames and writes `.npy` arrays plus a manifest, then a notebook that trains a
 deliberately minimal baseline against a trivial one. Here an example is a triplet — frames
 *t*, *t+1*, *t+2* — where the middle frame is the target and the outer two the input, and
