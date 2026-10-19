@@ -4,7 +4,8 @@ Every dataset folder has a `train.txt` and a `test.txt`, one file per line. We k
 split: for the YouTube sequences it is by video, so one video is never on both sides.
 Two kinds of file:
 
-- images (DIV2K, Flickr2K, Set5..Urban100): PNG, read by `load_image`;
+- images (DIV2K, Flickr2K, Set5..Urban100, and the desktop screens `datasets/screens.py`
+  draws): PNG, read by `load_image`;
 - sequences (yt8m-videos): short lossless `.mkv` clips, read by `load_sequence`.
 
 Both return uint8 RGB: (H, W, 3) for an image, (T, H, W, 3) for frames. Video is converted
@@ -27,7 +28,7 @@ from .degrade import FROM_YUV, ffmpeg
 ROOT = Path(os.environ.get("DATASETS_DIR", Path(__file__).resolve().parents[3] / "datasets"))
 RAW = ROOT / "raw"
 
-IMAGES = ("div2k", "flickr2k", "sr-benchmark")
+IMAGES = ("div2k", "flickr2k", "sr-benchmark", "screens")
 SEQUENCES = ("yt8m-videos",)
 
 

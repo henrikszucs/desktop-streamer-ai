@@ -93,8 +93,11 @@ def wpsnr_db(prediction, target, weights=WEIGHTS, chroma_subsample=1):
 def ssim_y(prediction, target, size=11, sigma=1.5):
     """SSIM on luma with the standard 11x11 Gaussian window, no padding. 1.0 is identical."""
     yuv_prediction, yuv_target = _yuv(prediction, target)
-    a, b = yuv_prediction[:, :1], yuv_target[:, :1]
+    return _ssim(yuv_prediction[:, :1], yuv_target[:, :1], size, sigma).mean().item()
 
+
+def _ssim(a, b, size=11, sigma=1.5):
+    """SSIM of (N, 1, H, W) images, one per image, as a tensor a loss can follow."""
     coords = torch.arange(size, device=a.device, dtype=a.dtype) - (size - 1) / 2
     window = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
     window = window / window.sum()
@@ -110,7 +113,7 @@ def ssim_y(prediction, target, size=11, sigma=1.5):
     c1, c2 = 0.01 ** 2, 0.03 ** 2
     numerator = (2 * mean_a * mean_b + c1) * (2 * covariance + c2)
     denominator = (mean_a ** 2 + mean_b ** 2 + c1) * (variance_a + variance_b + c2)
-    return (numerator / denominator).mean(dim=(1, 2, 3)).mean().item()
+    return (numerator / denominator).mean(dim=(1, 2, 3))
 
 
 def luma_chroma_l1(prediction, target, weights=WEIGHTS):
@@ -122,6 +125,20 @@ def luma_chroma_l1(prediction, target, weights=WEIGHTS):
     difference = (rgb_to_yuv(prediction) - rgb_to_yuv(target)).abs().mean(dim=(0, 2, 3))
     weight = torch.tensor(weights, device=difference.device, dtype=difference.dtype)
     return (difference * weight).sum() / weight.sum()
+
+
+def ssim_l1_loss(prediction, target, alpha=0.84):
+    """A training loss that rewards structure, not only pixel values: `alpha` x (1 - SSIM on
+    luma) + (1 - `alpha`) x L1 on RGB.
+
+    SSIM compares the edges and contrast in every 11x11 window, so a blurred edge costs more
+    than under L1; L1 keeps the colours and the flat areas right, which SSIM barely sees.
+    The mix and its 0.84 are from Zhao et al. (2017), who found it beat either alone - with
+    multi-scale SSIM, which needs a larger picture than these 128 px patches. Not clamped,
+    like `luma_chroma_l1`.
+    """
+    structure = 1 - _ssim(rgb_to_yuv(prediction)[:, :1], rgb_to_yuv(target)[:, :1]).mean()
+    return alpha * structure + (1 - alpha) * F.l1_loss(prediction, target)
 
 
 def report(prediction, target, chroma_subsample=1):

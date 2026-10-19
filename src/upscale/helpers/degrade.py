@@ -16,6 +16,11 @@ size. The host's 8 Mbit/s default at 960x540, 30 fps is about 0.46 bpp; its 200 
 floor is about 0.013. `bpp=None` skips the codec. `deblock=True` turns on x264's loop
 filter, like the hardware encoders use.
 
+Training draws from `BPP_RANGE`, 0.2 to 1.0, centred on the default: a client streams a
+small picture at a high bitrate (8 Mbit/s at 640x360 is 1.0 bpp). Below about 0.1 bpp
+most busy blocks are destroyed, which no stream a user watches looks like (summary.md,
+"How much the stream costs the LR").
+
 Pass frames as (T, H, W, 3) to encode a moving clip, or one image (H, W, 3).
 """
 
@@ -28,7 +33,7 @@ import numpy as np
 FILTERS = ("bilinear", "bicubic", "area")
 
 STREAM_BPP = 0.46            # 8 Mbit/s * 0.9 at 960x540, 30 fps
-BPP_RANGE = (0.013, 0.46)    # from the 200 kbit/s floor to the default
+BPP_RANGE = (0.2, 1.0)       # 3.5 to 17 Mbit/s at 960x540, 1.5 to 7.7 at 640x360
 
 
 @dataclass(frozen=True)
@@ -55,6 +60,30 @@ def sample(rng, scale=2, fps=30, bpp_range=BPP_RANGE, clean=0.1, deblock=0.5):
     if rng.random() < clean:
         return Degradation(scale=scale, filter=filter, bpp=None, fps=fps)
     return Degradation(scale=scale, filter=filter, bpp=bpp, fps=fps, deblock=filtered)
+
+
+# What a client can be told about how its frames were made, in two groups:
+# - "bpp": the bitrate, which the client always knows - it asked for the bandwidth, the
+#   height and the frame rate itself;
+# - "path": the downscale filter and the loop filter, which it knows only if the host says
+#   which encoder line it runs (libx264 is swscale's bicubic and no loop filter).
+CONDITIONS = {"bpp": 2, "path": len(FILTERS) + 1}
+
+
+def condition(degradation, parts=tuple(CONDITIONS)):
+    """A degradation (a `Degradation` or the dictionary the manifest stores) as numbers a
+    model can be given: for "bpp", log2 of the bitrate against the host's default and a 1
+    for no codec; for "path", the filter one-hot and a 1 for the loop filter."""
+    d = degradation if isinstance(degradation, dict) else degradation.as_dict()
+    values = []
+    for part in parts:
+        if part == "bpp":
+            values += [0.0, 1.0] if d["bpp"] is None else [math.log2(d["bpp"] / STREAM_BPP), 0.0]
+        elif part == "path":
+            values += [float(d["filter"] == name) for name in FILTERS] + [float(bool(d["deblock"]))]
+        else:
+            raise ValueError(f"unknown condition part {part!r}, not one of {list(CONDITIONS)}")
+    return np.array(values, np.float32)
 
 
 def crop(frames, scale):

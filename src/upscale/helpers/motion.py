@@ -9,7 +9,9 @@ Three kinds of motion, picked at random per image:
 
 - **slide**: the window moves a whole number of pixels per frame (mostly a scroll);
 - **zoom**: the window grows or shrinks a little (up to `MAX_ZOOM`) and drifts. The image
-  is only ever shrunk, never enlarged, so the HR target stays sharp;
+  is only ever shrunk, never enlarged, so the HR target stays sharp. Rare: a desktop
+  seldom zooms, and H.264 cannot predict a zoom, so it is the most damaged motion at
+  any bitrate;
 - **still**: the window does not move.
 """
 
@@ -19,7 +21,7 @@ import numpy as np
 from PIL import Image
 
 KINDS = ("slide", "zoom", "still")
-WEIGHTS = (0.4, 0.4, 0.2)
+WEIGHTS = (0.6, 0.1, 0.3)
 
 WINDOW = (1280, 720)
 MAX_ZOOM = 1.15

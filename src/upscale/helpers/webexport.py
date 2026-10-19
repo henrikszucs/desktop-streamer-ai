@@ -17,6 +17,7 @@ the three sizes of a tile (step, input, kept) and picks the tile a frame is cut 
 """
 
 import copy
+import math
 import time
 from pathlib import Path
 
@@ -63,6 +64,67 @@ def describe(path):
         ops[node.op_type] = ops.get(node.op_type, 0) + 1
     return {"path": path, "kb": round(path.stat().st_size / 1024, 1), "ops": ops,
             "outside_budget": sorted(set(ops) - BUDGET)}
+
+
+def count_work(path):
+    """The arithmetic and the memory traffic of one run of a graph, counted from the graph.
+
+    Operations are counted the way GPU and NPU spec sheets count them (TOPS, TFLOPS): one
+    multiply-add is 2 operations.
+
+    - `Conv`: 2 per weight for every output value, plus 1 for the bias;
+    - `Relu`, `LeakyRelu`, `Add`, `Mul`: 1 per output value;
+    - `DepthToSpace`, `Constant`: 0 - they only move data.
+
+    Memory traffic assumes every operator reads its inputs from memory and writes its
+    output back (no fusing), plus reading every weight once.
+
+    Returns {"operations", "by_op" (operations per operator type), "activation_bytes",
+    "weight_bytes", "input_pixels", "not_counted" (operators it does not know)}.
+    """
+    model = onnx.shape_inference.infer_shapes(onnx.load(str(path)))
+    graph = model.graph
+
+    # (shape, bytes per value) of every tensor between the operators
+    tensors = {}
+    for value in [*graph.input, *graph.value_info, *graph.output]:
+        kind = value.type.tensor_type
+        itemsize = onnx.helper.tensor_dtype_to_np_dtype(kind.elem_type).itemsize
+        tensors[value.name] = ([dim.dim_value for dim in kind.shape.dim], itemsize)
+    weights = {init.name: list(init.dims) for init in graph.initializer}
+    weight_bytes = sum(onnx.numpy_helper.to_array(init).nbytes for init in graph.initializer)
+
+    fixed = set(weights) | {node.output[0] for node in graph.node if node.op_type == "Constant"}
+
+    by_op, not_counted, activation_bytes = {}, [], 0
+    for node in graph.node:
+        if node.op_type == "Constant":
+            continue
+        out_shape = tensors[node.output[0]][0]
+        if node.op_type == "Conv":
+            kernel = weights[node.input[1]]   # (out channels, in channels / groups, kh, kw)
+            outputs = math.prod(out_shape)
+            has_bias = len(node.input) > 2 and node.input[2] != ""
+            operations = 2 * kernel[1] * kernel[2] * kernel[3] * outputs + (outputs if has_bias else 0)
+        elif node.op_type in ("Relu", "LeakyRelu", "Add", "Mul"):
+            operations = math.prod(out_shape)
+        elif node.op_type == "DepthToSpace":
+            operations = 0
+        else:
+            not_counted.append(node.op_type)
+            operations = 0
+        by_op[node.op_type] = by_op.get(node.op_type, 0) + operations
+
+        # read every input that is an activation (not a weight), write the output
+        for name in [*node.input, node.output[0]]:
+            if name in tensors and name not in fixed:
+                shape, itemsize = tensors[name]
+                activation_bytes += math.prod(shape) * itemsize
+
+    input_shape = tensors[graph.input[0].name][0]
+    return {"operations": sum(by_op.values()), "by_op": by_op, "activation_bytes": activation_bytes,
+            "weight_bytes": weight_bytes, "input_pixels": input_shape[0] * input_shape[2] * input_shape[3],
+            "not_counted": not_counted}
 
 
 def export(model, filename, size, label=None, halo=None, batch=1,

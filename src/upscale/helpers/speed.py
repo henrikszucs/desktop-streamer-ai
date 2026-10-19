@@ -9,6 +9,18 @@ import torch.nn as nn
 FRAME_60FPS_MS = 1000 / 60
 FRAME_30FPS_MS = 1000 / 30
 
+# Devices the client should run on, for the runtime estimate (`roofline_ms`): peak float32
+# TFLOPS and memory bandwidth in GB/s, from the spec sheets.
+HARDWARE = {
+    "Intel UHD 620 (laptop iGPU)": (0.42, 38),
+    "Intel Iris Xe, 96 EU (laptop iGPU)": (2.0, 68),
+    "Apple M1, 8-core GPU": (2.6, 68),
+    "NVIDIA GTX 1650": (3.0, 128),
+    "NVIDIA RTX 3060": (12.7, 360),
+    "NVIDIA RTX 3090": (35.6, 936),
+}
+THIS_GPU = "NVIDIA RTX 3090"   # this computer's GPU, which calibrates the estimate
+
 
 def time_ms(run, seconds=0.5, warmup=2):
     """Average milliseconds per call of `run()`.
@@ -38,6 +50,14 @@ def frame_budget(ms):
     if ms <= FRAME_30FPS_MS:
         return "30 fps"
     return "under 30 fps"
+
+
+def roofline_ms(work, tflops, gbps):
+    """The least time a device can take on `work` ({"operations", "bytes"}): the slower of
+    its arithmetic and its memory traffic. Returns (ms, "compute" or "memory")."""
+    compute = work["operations"] / (tflops * 1e12)
+    memory = work["bytes"] / (gbps * 1e9)
+    return max(compute, memory) * 1000, "compute" if compute >= memory else "memory"
 
 
 @torch.no_grad()

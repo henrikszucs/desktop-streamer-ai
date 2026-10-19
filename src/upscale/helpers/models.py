@@ -206,6 +206,63 @@ class ReparamUpscaler(Upscaler):
         return plain.to(next(self.parameters()).device).eval()
 
 
+# BT.709 luma: Y = 0.2126 R + 0.7152 G + 0.0722 B
+LUMA_709 = (0.2126, 0.7152, 0.0722)
+
+
+class ResidualBlock(nn.Module):
+    """x + 1x1(ReLU(3x3(x))). The 3x3 reaches one pixel further, the 1x1 none, so a block
+    costs one pixel of halo; the block's input added back keeps a deep body easy to train."""
+
+    def __init__(self, width):
+        super().__init__()
+        self.conv = nn.Conv2d(width, width, 3, padding=1)
+        self.point = nn.Conv2d(width, width, 1)
+
+    def forward(self, x):
+        return x + self.point(torch.relu(self.conv(x)))
+
+
+class LumaUpscaler(Upscaler):
+    """Bicubic for all three colours, plus a learned correction of brightness only.
+
+    The eye resolves fine detail in brightness (luma) far better than in colour, so the
+    network spends everything on luma. It predicts one correction per output sub-pixel and
+    adds the same value to R, G and B: in BT.709 that moves Y by exactly that value and
+    leaves Cb and Cr as bicubic made them. The three copies are a `Concat`.
+
+    The body: `widths` plain convolutions (the first `stem` x `stem`, then 3x3s), then
+    `blocks` `ResidualBlock`s at the last width, then a 3x3 tail that starts at zero.
+    `luma_in=True` feeds the body Y alone (a frozen 1x1 convolution) instead of RGB.
+    """
+
+    def __init__(self, widths=(24,), blocks=2, stem=3, skip=5, scale=2, luma_in=False):
+        super().__init__(scale, skip)
+        self.widths, self.blocks, self.stem, self.luma_in = tuple(widths), blocks, stem, luma_in
+        channels = 3
+        layers = []
+        if luma_in:
+            to_luma = nn.Conv2d(3, 1, 1, bias=False)
+            with torch.no_grad():
+                to_luma.weight.copy_(torch.tensor(LUMA_709)[None, :, None, None])
+            to_luma.weight.requires_grad_(False)
+            layers.append(to_luma)
+            channels = 1
+        for index, width in enumerate(widths):
+            kernel = stem if index == 0 else 3
+            layers += [nn.Conv2d(channels, width, kernel, padding=kernel // 2), nn.ReLU(inplace=True)]
+            channels = width
+        layers += [ResidualBlock(channels) for _ in range(blocks)]
+        self.body = nn.Sequential(*layers)
+        self.tail = zero_start(nn.Conv2d(channels, scale * scale, 3, padding=1))
+        # the 3x3s after the stem, one per block, and the tail
+        self.halo = self.halo_for(stem, len(widths) - 1 + blocks + 1)
+
+    def residual(self, x):
+        luma = self.tail(self.body(x))
+        return torch.cat([luma, luma, luma], dim=1)   # channel c * scale² + phase, for every colour c
+
+
 def count_parameters(model, learned_only=False):
     """How many numbers the model holds. `learned_only=True` leaves out frozen ones, such as
     the bicubic skip (900 weights at x2)."""

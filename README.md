@@ -10,7 +10,8 @@ measure, and the data and checkpoints they leave behind. **`dist/`** is the outp
 finished models, one subfolder per problem, written by the notebooks' export cells and
 nothing else. Beside them, **`datasets/`** holds the data, never committed: the public
 benchmarks every problem can draw on in `datasets/raw/`, downloaded by
-[`datasets/download.py`](datasets/download.py), and beside it one folder per problem for what
+[`datasets/download.py`](datasets/download.py) - and desktop screens, drawn by
+[`datasets/screens.py`](datasets/screens.py) - and beside it one folder per problem for what
 that problem's preprocessing makes of them (`datasets/upscale/`).
 
 Three problems, one folder each under `src/`, each with its own `summary.md` - and beside
@@ -77,21 +78,32 @@ so dropping a file in or deleting one is the whole operation, no restart and no 
 anything else. Run whichever notebooks you want on the page:
 
 - `src/upscale/0_data_preprocess.ipynb` — builds the patch dataset into `datasets/upscale/`,
-  and has to run first. With no dataset downloaded and nothing in `datasets/raw/captures/`
-  it trains on synthesised desktop-like frames, so it works before any real data exists. It
-  is not a model and exports nothing.
+  and has to run first, after `uv run datasets/screens.py` has drawn the desktop screens it
+  mixes in with the photos and video. With no dataset downloaded and nothing in
+  `datasets/raw/captures/` it trains on synthesised desktop-like frames, so it works before
+  any real data exists. It is not a model and exports nothing.
 - `src/upscale/1_upscale_dummy.ipynb` — the static baseline: the three filters ONNX can express
   as a `Resize` node, nearest, bilinear and bicubic. The bar a learned model must beat.
-- `src/upscale/2_upscale_nn.ipynb` — the bicubic-residual model.
+- `src/upscale/2_upscale_nn.ipynb` — a plain CNN that makes the whole picture itself, with
+  no bicubic shortcut.
 - `src/upscale/3_upscale_web.ipynb` — the same model shaped for the browser, published at three
   precisions and two tile sizes.
-- `src/upscale/4_upscale_strategies.ipynb` — six architectures under one recipe, scored by the
-  eye-weighted metric, publishing the two that win.
+- `src/upscale/4_upscale_strategies.ipynb` — eight strategies under notebook 3's recipe on the
+  stream-degraded data, judged against the spread of the control at three seeds, publishing
+  the best two at the 320×180 step.
 - `src/upscale/5_upscale_geometry.ipynb` — not a model: the *shape* one runs at. Sweeps tile size,
   batch and scale factor, charges everything in nanoseconds per output pixel, and publishes
   a family of geometries for the page to measure on whatever GPU is in front of it.
 - `src/upscale/6_upscale_reparam.ipynb` — the selected model, trained on the stream-degraded
   data and published at the 320×180 step a client runs, with bilinear and bicubic beside it.
+- `src/upscale/7_upscale_luma.ipynb` — a residual model that corrects brightness only (colour
+  stays bicubic), with residual blocks, published at the same 320×180 step.
+- `src/upscale/8_upscale_screens.ipynb` — notebook 7's model trained with desktop screens in
+  the data, blind and told how the stream was made (its bitrate, and the host's encoder path),
+  scored on screens, photos and video apart; published at the 320×180 step.
+- `src/upscale/9_upscale_dct.ipynb` — a model that only guesses gains: the DCT of overlapping
+  luma blocks, one learned gain per coefficient (fixed, or decided per block by a tiny
+  network), and a fixed windowed IDCT; colour stays bicubic. Published at the 320×180 step.
 
 The code the notebooks share lives in `src/upscale/helpers/`: `models.py` (the bicubic skip
 and the models built on it), `training.py` (loading the patches, the training loop, scoring,
@@ -191,9 +203,11 @@ desktop-streamer-ai/
 ├── pyproject.toml              deps and the pinned interpreter
 ├── datasets/                   gitignored but for the script and the mix — DATASETS_DIR moves it
 │   ├── download.py             uv run datasets/download.py --list; --dest for another drive
+│   ├── screens.py              uv run datasets/screens.py: desktop screens drawn in real fonts
 │   ├── yt8m-mix.txt            the YouTube-8M category mix yt8m-videos fetches by default
 │   ├── raw/                    the downloads: DIV2K, Flickr2K, Set5…, UVG, YouTube-8M + its videos
 │   │   ├── <name>/             one folder per dataset, with its train.txt and test.txt
+│   │   ├── screens/            what screens.py draws, train/ and test/, and screens.json
 │   │   └── captures/           screenshots of your own
 │   └── upscale/                0_data_preprocess.ipynb's patch pairs, manifest.json, synthetic/
 ├── src/                        the source: code, notebooks, and what training leaves behind
@@ -204,11 +218,13 @@ desktop-streamer-ai/
 │       ├── summary.md                the models, the numbers, and what they do not say
 │       ├── 0_data_preprocess.ipynb   frames → LR/HR patch clips, a halo around the LR side
 │       ├── 1_upscale_dummy.ipynb     static resampling filters, the bar to beat
-│       ├── 2_upscale_nn.ipynb        a first PyTorch model (and what not to export)
+│       ├── 2_upscale_nn.ipynb        a first PyTorch model: a plain CNN, no bicubic shortcut
 │       ├── 3_upscale_web.ipynb       the same model, shaped for the browser
-│       ├── 4_upscale_strategies.ipynb  six architectures, one recipe, one eye-weighted metric
+│       ├── 4_upscale_strategies.ipynb  eight strategies, one recipe, judged against seed noise
 │       ├── 5_upscale_geometry.ipynb  the shape to run one at: tile, batch, scale, ns per pixel
 │       ├── 6_upscale_reparam.ipynb   the selected model, trained on the stream, published at 320x180
+│       ├── 7_upscale_luma.ipynb      residual blocks that correct brightness only; colour stays bicubic
+│       ├── 8_upscale_screens.ipynb   the same, trained with desktop screens, blind and told the stream
 │       ├── helpers/                  modules the notebooks import, never run on their own
 │       │   ├── sources.py            reads the downloaded datasets back
 │       │   ├── motion.py             a still image as a moving clip: slide, zoom or hold

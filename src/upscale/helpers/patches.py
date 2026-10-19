@@ -57,15 +57,28 @@ def load(directory, split, manifest, halo=None, count=None):
 
 
 class PatchPairs(Dataset):
-    """(LR, HR) float tensors in [0, 1]. With `augment`, a random frame, flip and rotation."""
+    """(LR, HR) float tensors in [0, 1]. With `augment`, a random frame, flip and rotation.
 
-    def __init__(self, directory, split, manifest, augment, halo=None):
+    With a `condition` - a function of a source's manifest entry that returns a 1-D array,
+    such as `degrade.condition` of its degradation - a sample is ((LR, condition), HR)
+    instead, the condition shaped (K, 1, 1) so a batch of them broadcasts over a picture.
+    """
+
+    def __init__(self, directory, split, manifest, augment, halo=None, condition=None):
         self.split = split
         self.sources = manifest["splits"][split]["sources"]  # each source's file, motion and degradation
         self.lr, self.hr = _arrays(directory, split, manifest)
         self.cut = _cut(manifest, halo)
         self.halo = manifest["halo"] - self.cut
         self.augment = augment
+        self.conditions = None
+        if condition is not None:
+            # one row per patch: its source's condition
+            rows = np.zeros((len(self.lr), len(condition(self.sources[0]))), np.float32)
+            for source in self.sources:
+                first, end = source["patches"]
+                rows[first:end] = condition(source)
+            self.conditions = torch.from_numpy(rows)[:, :, None, None]
 
     def __len__(self):
         return len(self.lr)
@@ -83,6 +96,8 @@ class PatchPairs(Dataset):
             if int(torch.randint(0, 2, ())):
                 lr, hr = lr[:, ::-1], hr[:, ::-1]
 
+        if self.conditions is not None:
+            return (_to_tensor(lr), self.conditions[index]), _to_tensor(hr)
         return _to_tensor(lr), _to_tensor(hr)
 
 
