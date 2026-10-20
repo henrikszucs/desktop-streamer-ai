@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader
 from . import metrics, patches, sources
 from .patches import PatchPairs
 
-DATA_DIR = sources.ROOT / "upscale"     # what 0_data_preprocess.ipynb writes
+DATA_DIR = sources.ROOT / "upscale"     # what 00_data_preprocess.ipynb writes
 
 # Local output, not committed: trained weights and sample pictures.
 UPSCALE_DIR = Path(__file__).resolve().parents[1]
@@ -44,10 +44,10 @@ def seed_everything(seed=0):
 
 
 def load_manifest(data_dir=DATA_DIR):
-    """The manifest.json that 0_data_preprocess.ipynb wrote next to the patches."""
+    """The manifest.json that 00_data_preprocess.ipynb wrote next to the patches."""
     path = Path(data_dir) / "manifest.json"
     if not path.exists():
-        raise RuntimeError(f"no dataset in {data_dir} - run 0_data_preprocess.ipynb first")
+        raise RuntimeError(f"no dataset in {data_dir} - run 00_data_preprocess.ipynb first")
     return json.loads(path.read_text(encoding="utf-8"))
 
 

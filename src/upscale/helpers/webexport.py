@@ -36,6 +36,13 @@ TILE_STEP = 128
 # Operators the browser's WebGPU backend runs fast. Anything else may fall back to the CPU.
 BUDGET = {"Conv", "Relu", "LeakyRelu", "Add", "Concat", "DepthToSpace", "Constant"}
 
+# How `count_work` charges operators other than `Conv`: one operation per output value, none
+# (data only moves), or none and no memory traffic (the shape is relabelled, nothing is copied).
+ELEMENTWISE = {"Relu", "LeakyRelu", "Add", "Sub", "Mul", "Div", "Neg", "Floor", "Ceil", "Clip", "Cast",
+               "Equal", "Greater", "GreaterOrEqual", "Less", "LessOrEqual", "And", "Or", "Not", "Where"}
+MOVES = {"DepthToSpace", "Concat", "Gather", "Transpose", "Slice", "Split", "Pad"}
+VIEWS = {"Reshape", "Unsqueeze", "Squeeze", "Flatten", "Identity", "Shape"}
+
 
 # ---------------------------------------------------------------- writing graphs
 
@@ -73,11 +80,17 @@ def count_work(path):
     multiply-add is 2 operations.
 
     - `Conv`: 2 per weight for every output value, plus 1 for the bias;
-    - `Relu`, `LeakyRelu`, `Add`, `Mul`: 1 per output value;
-    - `DepthToSpace`, `Constant`: 0 - they only move data.
+    - elementwise operators (`ELEMENTWISE`: `Relu`, `Add`, `Mul`, `Floor`, a comparison, a
+      `Cast`...): 1 per output value;
+    - `ReduceSum`: 1 per input value;
+    - `MOVES` (`DepthToSpace`, `Concat`, `Gather`, `Transpose`...) and `Constant`: 0 - they
+      only move data;
+    - `VIEWS` (`Reshape`, `Unsqueeze`...): 0, and no memory traffic either - they only
+      relabel a tensor's shape.
 
     Memory traffic assumes every operator reads its inputs from memory and writes its
-    output back (no fusing), plus reading every weight once.
+    output back (no fusing), plus reading every weight once. A `Gather` from a table reads
+    only the entries it gathers, which its output already counts.
 
     Returns {"operations", "by_op" (operations per operator type), "activation_bytes",
     "weight_bytes", "input_pixels", "not_counted" (operators it does not know)}.
@@ -93,12 +106,15 @@ def count_work(path):
         tensors[value.name] = ([dim.dim_value for dim in kind.shape.dim], itemsize)
     weights = {init.name: list(init.dims) for init in graph.initializer}
     weight_bytes = sum(onnx.numpy_helper.to_array(init).nbytes for init in graph.initializer)
+    for node in graph.node:   # the exporter shares a weight two layers hold alike through an Identity
+        if node.op_type == "Identity" and node.input[0] in weights:
+            weights[node.output[0]] = weights[node.input[0]]
 
     fixed = set(weights) | {node.output[0] for node in graph.node if node.op_type == "Constant"}
 
     by_op, not_counted, activation_bytes = {}, [], 0
     for node in graph.node:
-        if node.op_type == "Constant":
+        if node.op_type == "Constant" or node.op_type in VIEWS:
             continue
         out_shape = tensors[node.output[0]][0]
         if node.op_type == "Conv":
@@ -106,9 +122,11 @@ def count_work(path):
             outputs = math.prod(out_shape)
             has_bias = len(node.input) > 2 and node.input[2] != ""
             operations = 2 * kernel[1] * kernel[2] * kernel[3] * outputs + (outputs if has_bias else 0)
-        elif node.op_type in ("Relu", "LeakyRelu", "Add", "Mul"):
+        elif node.op_type in ELEMENTWISE:
             operations = math.prod(out_shape)
-        elif node.op_type == "DepthToSpace":
+        elif node.op_type == "ReduceSum":
+            operations = math.prod(tensors[node.input[0]][0])
+        elif node.op_type in MOVES:
             operations = 0
         else:
             not_counted.append(node.op_type)

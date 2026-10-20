@@ -16,7 +16,7 @@ import math
 
 # The tile a client should run, in output pixels: 640x360 (a 320x180 step). It divides
 # every 16:9 resolution exactly - 720p is 2x2 tiles, 1080p 3x3, 1440p 4x4, 4K 6x6.
-# Chosen in 5_upscale_geometry.ipynb.
+# Chosen in 05_upscale_geometry.ipynb.
 TARGET_KEPT_PX = 640 * 360
 
 

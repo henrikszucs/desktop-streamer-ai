@@ -12,7 +12,7 @@ const FRAME_HEIGHT = 1080;
 // about a geometry rather than about a model, and two geometries cannot be compared by it:
 // a 128 step and a 256 step differ by 4x in what one run is worth before either one has
 // been run. Nanoseconds per output pixel divides that out, and a frame cost multiplies it
-// back in whenever one is wanted. See 5_upscale_geometry.ipynb, which is the notebook this
+// back in whenever one is wanted. See 05_upscale_geometry.ipynb, which is the notebook this
 // column exists for.
 const WASM_PATH = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/";
 const WARMUP = 5;

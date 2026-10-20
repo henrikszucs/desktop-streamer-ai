@@ -27,7 +27,7 @@ right but the pointer may still be worth shipping.
 
 ## Shape it would take
 
-The same shape as `../upscale/`: a `0_data_preprocess.ipynb` writing `.npy` arrays plus a
+The same shape as `../upscale/`: a `00_data_preprocess.ipynb` writing `.npy` arrays plus a
 manifest, then a notebook training a minimal baseline. An example is a run of consecutive
 frames where the last is the target and the ones before it the input, and the baseline to
 beat is repeating the newest frame — which on a static desktop is already close to perfect,

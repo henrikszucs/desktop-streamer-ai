@@ -41,7 +41,7 @@ published.
 
 Run in order, from this folder:
 
-- `0_data_preprocess.ipynb` — source frames from the downloaded datasets (DIV2K, Flickr2K,
+- `00_data_preprocess.ipynb` — source frames from the downloaded datasets (DIV2K, Flickr2K,
   YouTube sequences, read by `helpers/sources.py`), the desktop screens `datasets/screens.py`
   draws (400 train, 80 validation: code, documents, terminals, spreadsheets, chat, file
   explorers and settings in real fonts, light and dark, 100–200% display scale, some in
@@ -63,39 +63,39 @@ Run in order, from this folder:
   patches without a halo, so none of them carries over: on a 40-source test set, the
   32-16 model trained 100 epochs gains +1.0 dB over bicubic without the codec and +0.16 dB
   with it.
-- `1_upscale_dummy.ipynb` — **static methods only.** Seven of them: nearest, box, bilinear,
+- `01_upscale_dummy.ipynb` — **static methods only.** Seven of them: nearest, box, bilinear,
   hamming, bicubic, Lanczos, and bicubic followed by an unsharp mask. No training; it
   measures quality and runtime, hands out the bar, and exports the three ONNX can express
   as `Resize` so the bar exists in the browser too.
-- `2_upscale_nn.ipynb` — **the PyTorch attempt.** Trains `PlainCNN`, an ESPCN-shaped
+- `02_upscale_nn.ipynb` — **the PyTorch attempt.** Trains `PlainCNN`, an ESPCN-shaped
   network with no bicubic shortcut that makes the whole picture itself, on the patch
   pairs, measures it the same way, writes `checkpoints/upscale_nn.pt`, and exports it.
-- `3_upscale_web.ipynb` — **the model shaped for the browser.** Same data, same metric; every
+- `03_upscale_web.ipynb` — **the model shaped for the browser.** Same data, same metric; every
   design decision made against a measurement taken in the browser rather than in torch.
   Trains `PlainUpscaler` (`helpers/models.py`), publishes it at three precisions and two
   tile sizes, and carries the ladder of what each optimisation cost and bought.
-- `4_upscale_strategies.ipynb` — **eight strategies under one recipe**, on the
+- `04_upscale_strategies.ipynb` — **three strategies under one recipe**, on the
   stream-degraded set, in notebook 3's order (data → models → speed → train → save →
-  export): the 32-16 control, with a leaky ReLU, reparameterized, correcting luma only,
-  both of those, notebook 7's residual blocks with and without reparameterization, and a
-  colour branch. Every strategy's halo and starting point are measured, and its speed
+  export): the 32-16 control, the same body correcting luma only, and notebook 7's
+  residual blocks — the three the eight-strategy sweep below left standing; the other five
+  are not trained again. Every strategy's starting point is checked, and its speed
   estimated, before it trains; every run is checkpointed, so a re-run only loads them.
   It also measures what a difference has to be worth before it is one — the control at
   three seeds — which is still the most useful thing in it. Publishes the best two graphs
   at the 320×180 step.
-- `5_upscale_geometry.ipynb` — **not a model: the shape one runs at.** Tile size, batch and
+- `05_upscale_geometry.ipynb` — **not a model: the shape one runs at.** Tile size, batch and
   scale factor, swept on the CPU and then measured in the browser on the card, charged in
   **nanoseconds per output pixel** because a run is a tile and a rate of runs cannot compare
   two tile sizes. It is what chose 640×360, and what `tiles.plan_tiling` implements.
-- `6_upscale_reparam.ipynb` — **the selected model on the stream-degraded set.** The
-  reparameterized 32-16 the strategy sweep chose, trained on the new patch set as several
-  runs (other seeds and learning rates) with the best on validation kept. Each run trains
-  until it has converged - the learning rate halves whenever the score stalls, and the run
-  stops once a hundredth of the starting rate brings nothing more - and saves a checkpoint
-  every epoch. The sweep's 1e-3 does not learn on this data: 100 epochs at 1e-3 ended
-  within 0.001 dB of bicubic, and a 15-epoch run at 1e-3 and an 8-epoch one at 3e-3 never
-  beat it, while 1e-4 was +0.14 dB after 5 epochs and still rising - so the runs start at
-  1e-4. The kept run is measured against bilinear, bicubic and Lanczos-3 overall and by
+- `06_upscale_reparam.ipynb` — **the selected model on the stream-degraded set.** The
+  reparameterized 32-16 the strategy sweep chose, trained on the new patch set as one run
+  (notebook 4 measures how far apart seeds land; it used to train four and keep the best).
+  The run trains until it has converged - the learning rate halves whenever the score
+  stalls, and the run stops once a hundredth of the starting rate brings nothing more - and
+  saves a checkpoint every epoch. The sweep's 1e-3 does not learn on this data: 100 epochs
+  at 1e-3 ended within 0.001 dB of bicubic, and a 15-epoch run at 1e-3 and an 8-epoch one at
+  3e-3 never beat it, while 1e-4 was +0.14 dB after 5 epochs and still rising - so the run
+  starts at 1e-4. The model is measured against bilinear, bicubic and Lanczos-3 overall and by
   bitrate and content, collapsed, checkpointed to `checkpoints/upscale_reparam.pt`, and
   published at the client's 320×180 step (float32, float16 and a whole-1080p-frame graph)
   with bilinear and bicubic beside it as the page's baselines. Not run yet:
@@ -103,12 +103,13 @@ Run in order, from this folder:
   page has no models. Its premise has not held up: the strategy sweep re-run on this data
   finds reparameterization worth nothing measurable, and explains the 1e-3 failure — the
   branches switch off 14 of the 16 narrow channels within 20 steps (see "Strategies").
-- `7_upscale_luma.ipynb` — **a residual model that corrects brightness only.** Colour is
+- `07_upscale_luma.ipynb` — **a residual model that corrects brightness only.** Colour is
   bicubic and never touched; the network adds one luma correction per output pixel, the
   same value to R, G and B, with two residual blocks inside the 4-pixel halo. Same workflow
   and loss as notebooks 2 and 3; published at the client's 320×180 step (float32, float16,
-  whole frame).
-- `8_upscale_screens.ipynb` — **notebook 7's model on a set with desktop screens, blind and
+  whole frame). It is notebook 4's `luma 24 + 2 blocks` with the same seed and recipe, so
+  the two share one training file: whichever runs first trains it, the other loads it.
+- `08_upscale_screens.ipynb` — **notebook 7's model on a set with desktop screens, blind and
   told how the stream was made.** Trains it blind at three seeds (the ruler), then told the
   bitrate (`degrade.condition`: what the client always knows, having asked for the
   bandwidth, height and frame rate), then told the host's encoder path too (the downscale
@@ -120,8 +121,10 @@ Run in order, from this folder:
   SSIM-Y on screens over notebook 4's model, the bitrate is worth nothing, and the path
   +0.0021 SSIM-Y overall — see "Desktop screens and a known stream". It publishes the told
   model baked for the host's path today at 0.2, 0.46 and 1.0 bpp, and only the 0.46 graph
-  earns its place.
-- `9_upscale_dct.ipynb` — **a model that only guesses gains.** Luma is the DCT of 8×8 blocks
+  earns its place. Since the bitrate alone bought nothing, the notebook now trains only the
+  blind model (three seeds) and the model told the bitrate and the path; the bitrate-only
+  run is recorded here and not trained again.
+- `09_upscale_dct.ipynb` — **a model that only guesses gains.** Luma is the DCT of 8×8 blocks
   every 4 px, one learned gain per coefficient of the 16×16 spectrum, and a windowed IDCT
   whose halves overlap and add up to exactly 1; colour is bicubic. The 16-point DCT of a
   nearest-neighbour block is its 8-point DCT mirrored into four quadrants, so the larger
@@ -166,7 +169,7 @@ Every number below is CPU, 12 threads. The installed torch is a CPU build (`2.13
 even though `pyproject.toml` declares a CUDA index, so nothing here has been measured on a
 GPU. Runtimes are forward pass only — no decode, no copy, no PNG encoding.
 
-## How much the stream costs the LR (`0_data_preprocess.ipynb`)
+## How much the stream costs the LR (`00_data_preprocess.ipynb`)
 
 Every stored LR patch against the *ideal* downscale of its HR target — the same filter, in
 RGB, no 4:2:0 and no codec — on the inner 56×56 of its core (RGB PSNR). Rebuilding a
@@ -210,7 +213,7 @@ mostly **slides** — 29% of the frames, a median of 33.7 dB and a quarter under
 which is scrolling, a desktop's commonest motion, so it stays. Real video is at 41.9 dB
 with 4% under 30. Every result further down was trained on an older set.
 
-## Static methods (`1_upscale_dummy.ipynb`)
+## Static methods (`01_upscale_dummy.ipynb`)
 
 ### Quality — 76 validation patches, 64px → 128px
 
@@ -287,7 +290,7 @@ in the fixed-function path for free. The `Resize` graphs exist so that one runti
 both the bar and the models, which is the only way those two numbers are comparable — they
 are the cost of the bar *through ONNX Runtime*, not the cost of the bar.
 
-## Learned model (`2_upscale_nn.ipynb`)
+## Learned model (`02_upscale_nn.ipynb`)
 
 **`PlainCNN`** — the notebook's model: a plain CNN with no bicubic shortcut, so it makes the
 whole picture itself - convolutions at low resolution, then `PixelShuffle`; halo 4, nothing
@@ -390,7 +393,7 @@ Batching costs here rather than paying: a CPU already spreading one frame across
 threads has no idle width for a second, so a batch adds memory traffic and the latency of
 waiting for it. Worth rechecking on a GPU, where the opposite is the usual result.
 
-## The browser-shaped model (`3_upscale_web.ipynb`)
+## The browser-shaped model (`03_upscale_web.ipynb`)
 
 **`PlainUpscaler`** (`helpers/models.py`; called `WebUpscaler` when these numbers were taken) — 9,696 parameters (8,796 of them learned), fixed at ×2, halo 4. The same
 ESPCN shape as `upscale_nn` with a narrower body (32-16 against 64-32) and one structural
@@ -477,7 +480,7 @@ The shape ladder, all at 100 epochs on the same data, same seed, same recipe —
 | 16-8 | 28.53 dB | +5.12 | 4,152 | 4,116 |
 
 **Read that ladder against 0.61 dB, not against 0.15.** The ±0.15 above came from one pair
-of runs; three runs of one strategy in `4_upscale_strategies.ipynb` land 0.61 dB apart, which
+of runs; three runs of one strategy in `04_upscale_strategies.ipynb` land 0.61 dB apart, which
 covers several of these rungs. (That was the synthetic set; on the stream-degraded one, three
 seeds of the 32-16 land 0.13 dB apart.) The choice of shape survives it — a third of the MACs for
 1.2 dB is a gap four times the noise — but the rows nearest each other were never
@@ -489,7 +492,7 @@ and were not: a depthwise-separable body loses 0.5 dB at the same cost (the poin
 mixing it saves is the part that was working), and a strided stem running the body at half
 resolution loses 1 dB for a saving a narrower body buys more cheaply.
 
-## The luma residual model (`7_upscale_luma.ipynb`)
+## The luma residual model (`07_upscale_luma.ipynb`)
 
 The eye resolves detail in brightness far better than in colour, so **`LumaUpscaler`**
 (`helpers/models.py`) spends nothing on colour: the bicubic skip makes the picture, and the
@@ -528,6 +531,11 @@ at bicubic**, 108 epochs in 9 min. On the drawn desktop frame (no codec) +2.0 dB
 an RTX 3060 (60 fps), 26 ms on a GTX 1650 (30 fps) and 49 ms on an Iris Xe or an M1 —
 under 30 fps there, where notebook 3's model is at 25 ms. Those devices want the same-cost
 luma body instead, or tiles that did not change skipped.
+
+The notebook now loads notebook 4's run of the same model instead of training its own, so
+`upscale_luma_24x2` carries that run's weights (116 epochs, best at 98): on the current
+validation set (3,523 patches) **0.9292 SSIM-Y, +0.0243 over bicubic**, and 27.68 dB wpsnr
+and 0.9656 SSIM on the drawn desktop frame.
 
 ## How quality is measured (`helpers/metrics.py`)
 
@@ -571,14 +579,14 @@ What the module provides, and the distinctions that matter:
 - `luma_chroma_l1` — the same weighting as a training loss, so the objective can be made
   to match the metric. Whether that is worth doing is measured below, and the answer is no.
 - `ssim_l1_loss` — 0.84 × (1 − SSIM on luma) + 0.16 × L1: a loss that pays for structure,
-  not only pixel values. `2_upscale_nn.ipynb` trains with it (see "Learned model").
+  not only pixel values. `02_upscale_nn.ipynb` trains with it (see "Learned model").
 - `psnr` — plain RGB, kept so the older tables stay readable.
 
 **The two columns are different measurements and must not be subtracted.** Y carries most
 of the error, so a weighted score sits near the luma score and away from the RGB one: the
 32-16 model reads 31.81 dB weighted and 30.15 dB RGB on the same patches, in the same run.
 
-## Strategies (`4_upscale_strategies.ipynb`)
+## Strategies (`04_upscale_strategies.ipynb`)
 
 `upscale_web` asked how fast one architecture could be made, and `upscale_luma` found a
 better one. This notebook asks which *ideas* are worth keeping. Eight strategies under one
@@ -652,6 +660,11 @@ on an Iris Xe or an M1, where the blocks take 54). Within the cheap tier the cho
 not move quality, so it should be made on what the browser measures, and on colour, which
 the luma frame keeps at bicubic for nothing.
 
+So the notebook now trains only those two tiers and the control: `luma 24 + 2 blocks`,
+`luma 32-16` and `32-16` at three seeds, five runs (about 45 minutes) instead of eleven. The
+table above is the record of the other five, and the notebook publishes `luma 32-16` as its
+second graph where it published `32-16 leaky`.
+
 On the drawn desktop frame of notebooks 3 and 7 (no codec), `luma 24 + 2 blocks` reads
 27.68 dB wpsnr and 0.9656 SSIM-Y against the control's 27.10 and 0.9609 and bicubic's 25.82
 and 0.9437.
@@ -664,9 +677,10 @@ and 0.9437.
   off for the check — notebook 6's merge check had the same false alarm waiting for it.
 - **Two strategies of the first sweep reach past the halo.** `recursive ×3` reaches 6
   pixels and `dense cascade` 5, against the 4 of the patches and of the client's tiles:
-  trained, they would learn from zero padding, and tiled, they would seam. The notebook now
-  asserts every strategy's measured halo against the patches', and every graph against the
-  op budget; those two and `attention` are no longer in it.
+  trained, they would learn from zero padding, and tiled, they would seam. The notebook
+  measured every strategy's halo while it defined strategies of its own; it now builds only
+  `helpers/models.py`'s, asserts their declared halo against the patches' and every graph
+  against the op budget. Those two and `attention` are no longer in it.
 - **One run of the control flatters everything.** The verdict first compared each
   strategy with seed 0 of the control, which happened to be the lowest of the three, and
   called two ties wins. It compares with the mean now. Every single-run comparison in this
@@ -769,7 +783,7 @@ float16 — one graph per architecture, since the top rows are otherwise the sam
 Both are 0.93–1.07 ms per tile on the desktop CPU runtime, which is a CPU number: `upscale_web`
 has already shown that CPU and WebGPU disagree about which operators are expensive.
 
-## Desktop screens and a known stream (`8_upscale_screens.ipynb`)
+## Desktop screens and a known stream (`08_upscale_screens.ipynb`)
 
 Notebook 7's model (`luma 24 + 2 blocks`) on the patch set with desktop screens in both
 splits (1,154 of the 3,523 validation patches), trained blind at three seeds, which is the
@@ -944,7 +958,7 @@ because it is what a client should run. The constant stays 128 until the static 
 are re-exported beside it.
 
 **That sweep asked the question of square steps only, and the answer was not among them.**
-`5_upscale_geometry.ipynb` below sweeps the batch and the rectangle as well, charges everything
+`05_upscale_geometry.ipynb` below sweeps the batch and the rectangle as well, charges everything
 per output pixel, and lands on **640×360 out, from a 320×180 step** — 6.8 ms a 1080p frame
 against this table's 8 ms at 128, and the same tile divides 720p, 1440p and 4K exactly too.
 The `ms / frame` column here is also missing what it costs to *not* divide the frame: a 256
@@ -956,7 +970,7 @@ frame so the main thread yields 40 times instead of blocking once. That sweep wa
 against a model that has since been removed, so the timings behind it are gone; the geometry
 argument is not.
 
-## The geometry a client runs at (`5_upscale_geometry.ipynb`)
+## The geometry a client runs at (`05_upscale_geometry.ipynb`)
 
 Everything above is published at one geometry — a 128 LR step, a 136×136 input, 256×256
 kept — chosen on CPU timings before there was a browser to choose it on. This notebook asks
@@ -1106,7 +1120,7 @@ does — nearest needs none, bilinear 1, bicubic 2, every network here 4:
 | `upscale_dummy` | static nearest / bilinear / bicubic | 128 / 130 / 132 | 0 / 1 / 2 |
 | `upscale_nn` | nn bicubic residual | 136 | 4 |
 | `upscale_web` | web 32-16 in fp32 / fp16 / int8, and fp16 at step 256 | 136 / 264 | 4 |
-| `upscale_strategies` | luma 24 + 2 blocks and 32-16 leaky, fp32 / fp16, and fp16 as a whole 1080p frame | 328×188 / 968×548 | 4 |
+| `upscale_strategies` | luma 24 + 2 blocks and luma 32-16 (and 32-16 leaky, from the eight-strategy run), fp32 / fp16, and fp16 as a whole 1080p frame | 328×188 / 968×548 | 4 |
 
 The results table below predates the last two rows, which have not been measured in a
 browser yet.
@@ -1178,7 +1192,7 @@ bicubic reads 35.00 dB RGB and 37.30 dB weighted; the other columns are the old 
 set, so that column is not comparable with its neighbours.
 
 The frame figures in that table are all at the published 128 step, which
-`5_upscale_geometry.ipynb` has since shown to be the most expensive geometry of the ones it
+`05_upscale_geometry.ipynb` has since shown to be the most expensive geometry of the ones it
 swept — the same model at 320×180 reads 6.8 ms where 128 reads 11.7 on the same card in the
 same sitting.
 
@@ -1215,7 +1229,7 @@ depend on the data at all.
   the 32-16 0.13 dB wpsnr and 0.0004 SSIM-Y apart, against 0.61 dB on two frames. It is
   still the constraint on the questions left — every 32-16-sized idea in the strategy sweep
   is inside it — so a decision between bodies of one size needs more seeds, not more ideas.
-- **Re-point `6_upscale_reparam.ipynb`.** It trains the model the first strategy sweep
+- **Re-point `06_upscale_reparam.ipynb`.** It trains the model the first strategy sweep
   chose, and the sweep re-run on its own data finds reparameterization worth nothing
   measurable. The candidates are now two tiers: `luma 24 + 2 blocks` and a 32-16-sized luma
   body.
@@ -1233,8 +1247,8 @@ depend on the data at all.
 - **Measure the two tiers in the browser, on a laptop iGPU.** The tier boundary — 54 ms
   against 25 ms a 1080p frame on an Iris Xe — is a roofline estimate calibrated on an RTX
   3090; whether the blocks model misses 30 fps there is the page's question.
-- **Re-run `2_upscale_nn.ipynb` at a real training budget, and re-measure it and
-  `1_upscale_dummy.ipynb` through `helpers/metrics.py`.** Its 12 epochs are 96 optimizer steps, and
+- **Re-run `02_upscale_nn.ipynb` at a real training budget, and re-measure it and
+  `01_upscale_dummy.ipynb` through `helpers/metrics.py`.** Its 12 epochs are 96 optimizer steps, and
   every quality number attributed to it is a number about that; and both notebooks still
   report RGB PSNR, so neither can be compared with anything measured since.
 - **Real data, which is now the only thing standing between this and a decision.** Screen
@@ -1244,7 +1258,7 @@ depend on the data at all.
 - **Skip the tiles that did not change**, in whatever ends up driving inference in desktop-streamer's `src/`.
   It is the largest remaining factor on desktop content, it is exact rather than
   approximate, and the model needs no change for it.
-- **Re-export everything at 320×180.** The step is decided — `5_upscale_geometry.ipynb`
+- **Re-export everything at 320×180.** The step is decided — `05_upscale_geometry.ipynb`
   measured it — and every published graph is still at 128, including the one a client would
   run. `TILE_STEP` itself stays 128 while it is what the page compares models at.
 - The same runtime tables on a GPU for training and for the desktop client. The browser

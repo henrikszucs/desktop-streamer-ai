@@ -1,4 +1,4 @@
-"""Read back the patch set that `0_data_preprocess.ipynb` writes.
+"""Read back the patch set that `00_data_preprocess.ipynb` writes.
 
 Each patch is a short clip (`frames_per_patch` frames) of one spot of the screen:
 
