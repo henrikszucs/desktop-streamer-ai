@@ -108,8 +108,9 @@ def ffmpeg(args, data=None):
     return result.stdout
 
 
-def degrade(hr, degradation=Degradation()):
-    """Return (HR, LR): HR is `hr` cropped, LR is what the stream turns it into."""
+def degrade(hr, degradation=Degradation(), with_bits=False):
+    """Return (HR, LR): HR is `hr` cropped, LR is what the stream turns it into. With
+    `with_bits`, (HR, LR, bits): the size of the H.264 stream it was sent as (0 with no codec)."""
     d = degradation
     hr = crop(np.asarray(hr, dtype=np.uint8), d.scale)
     frames = hr[None] if hr.ndim == 3 else hr
@@ -121,6 +122,7 @@ def degrade(hr, degradation=Degradation()):
                  f":out_color_matrix=bt709:out_range=tv,format=yuv420p")
 
     if d.bpp is None:
+        h264 = b""
         out = ffmpeg([*raw_input, "-vf", f"{downscale},{FROM_YUV}", "-f", "rawvideo"], frames.tobytes())
     else:
         kbps = d.bpp * lr_width * lr_height * d.fps / 1000
@@ -137,4 +139,5 @@ def degrade(hr, degradation=Degradation()):
     lr = np.frombuffer(out, dtype=np.uint8).reshape(-1, lr_height, lr_width, 3)
     if len(lr) != count:
         raise RuntimeError(f"ffmpeg returned {len(lr)} frames for {count}")
-    return hr, (lr[0] if hr.ndim == 3 else lr)
+    lr = lr[0] if hr.ndim == 3 else lr
+    return (hr, lr, 8 * len(h264)) if with_bits else (hr, lr)

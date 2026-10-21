@@ -83,6 +83,7 @@ def count_work(path):
     - elementwise operators (`ELEMENTWISE`: `Relu`, `Add`, `Mul`, `Floor`, a comparison, a
       `Cast`...): 1 per output value;
     - `ReduceSum`: 1 per input value;
+    - `Softmax`: 3 per output value - its exponent, its share of the sum and a divide;
     - `MOVES` (`DepthToSpace`, `Concat`, `Gather`, `Transpose`...) and `Constant`: 0 - they
       only move data;
     - `VIEWS` (`Reshape`, `Unsqueeze`...): 0, and no memory traffic either - they only
@@ -126,6 +127,8 @@ def count_work(path):
             operations = math.prod(out_shape)
         elif node.op_type == "ReduceSum":
             operations = math.prod(tensors[node.input[0]][0])
+        elif node.op_type == "Softmax":
+            operations = 3 * math.prod(out_shape)
         elif node.op_type in MOVES:
             operations = 0
         else:

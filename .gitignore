@@ -8,5 +8,5 @@ __pycache__/
 src/*/data/
 src/*/checkpoints/
 datasets/*/
-
+dist/output*
 .DS_Store

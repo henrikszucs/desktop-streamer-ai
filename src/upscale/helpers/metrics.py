@@ -141,6 +141,14 @@ def ssim_l1_loss(prediction, target, alpha=0.84):
     return alpha * structure + (1 - alpha) * F.l1_loss(prediction, target)
 
 
+def per_image(prediction, target):
+    """Luma SSIM and luma PSNR of every image on its own, as (N,) tensors - for choosing
+    between models image by image. Their means are `report`'s "ssim" and "y"."""
+    yuv_prediction, yuv_target = _yuv(prediction, target)
+    luma_prediction, luma_target = yuv_prediction[:, :1], yuv_target[:, :1]
+    return {"ssim": _ssim(luma_prediction, luma_target), "y": _db(_mse(luma_prediction, luma_target))[:, 0]}
+
+
 def report(prediction, target, chroma_subsample=1):
     """Every score for one batch, in one dictionary."""
     return {"wpsnr": wpsnr(prediction, target, chroma_subsample=chroma_subsample),
