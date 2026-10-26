@@ -18,8 +18,9 @@ be sent fewer pixels than it displays.
 > two-stage `SDY x2` table gains +0.064 SSIM-Y on screens (+0.062 for notebook 8's blind
 > model) and costs **75 ms a 1080p frame**: interpolating a 4-D table is dozens of small
 > operators. Notebook 11 reads one exact entry instead; once three integer operators the
-> WebGPU provider has no kernels for are rewritten, its `SDY x2` graph runs in **8.6 ms**.
-> Its training has not run yet - one epoch already puts it at +0.045 SSIM-Y on screens.
+> WebGPU provider has no kernels for are rewritten, its `SDY x2` graph runs in **7.3 ms** -
+> but binned rather than interpolated it keeps only three quarters of the lead: +0.048 SSIM-Y
+> on screens, under notebook 8's model. No table is worth shipping over it.
 >
 > **Of everything else tried, the host's post-filter pays.** Gains on a DCT (9) are too
 > weak; a directional upscaler (12) beats notebook 4's model on screens at 41% of its
@@ -159,10 +160,12 @@ Run in order, from this folder:
   other taps' differences from it in 19 bins, fine near 0 and coarse far from it (S and
   `SDY x2`, MuLUT's kernels as before), or a 3×3 neighbourhood's pattern of signs (3⁸ rows),
   whose row is a filter applied to the differences. Float32 only, because a float16 tap can
-  round into the neighbouring row. **Not run** — its training, five runs to convergence, is
-  roughly three hours on the RTX 3090, judging by notebook 10's. Its untrained graphs have
-  been timed in the browser (the speed of a table does not depend on what is in it): see
-  "The browser benchmark".
+  round into the neighbouring row. Three of its operators had no WebGPU kernel and ran on
+  the CPU; rewritten (see "Results at the client's tile"), its graphs run in 2.3–7.3 ms a
+  1080p frame. Binning costs what interpolation bought: `SDY x2` scores 0.9267 SSIM-Y and
+  +0.048 on screens, against notebook 10's 0.9343 and +0.064, and `S` 0.9238 (three seeds,
+  0.0000 apart) against 0.9251. The 3×3 pattern filter is worse than `S` (0.9188). Trained
+  in 72 minutes on the RTX 3090.
 - `12_upscale_dirnet.ipynb` — **a directional upscaler.** Every sub-pixel gets four learned
   1D interpolators, along its row, its column and both diagonals, each starting as the
   cubic kernel along its line; a predictor reading 7×7 LR pixels chooses between them per
@@ -200,7 +203,7 @@ with the `psnr-rgb` column, not with `wpsnr`.
 Each model notebook owns its own export cell and writes its `.onnx` into `dist/upscale/`
 at the repo root through `helpers/webexport.py`. That is all publishing is: the benchmark server
 lists whatever graphs are in that folder, per request, so there is no manifest for a
-re-export to leave stale. 55 graphs are on the page today: notebooks 1–3's eight (seven at
+re-export to leave stale. 61 graphs are on the page today: notebooks 1–3's eight (seven at
 the old 128 step, one at 256), and every model from notebook 4 on at the 320×180 step, most at float32, float16
 and float16 as a whole 1080p frame.
 
@@ -970,6 +973,9 @@ the same 3,523 validation patches. Gain over bicubic, SSIM-Y / luma PSNR dB:
 | DirNet B: one 5×5 filter (12) | 1,800 | 0.9096 | 33.35 | +0.0095 / +0.30 | +0.0071 / +0.14 | −0.0001 / +0.11 |
 | DCT, fixed gains (9) | 4,600 | 0.9107 | 33.45 | +0.0114 / +0.38 | +0.0085 / +0.24 | +0.0002 / +0.21 |
 | DCT, gains decided through 32 (9) | 6,104 | 0.9172 | 33.45 | +0.0227 / +0.45 | +0.0129 / +0.14 | +0.0044 / +0.20 |
+| 3×3 pattern filter (11) | 2,032 | 0.9188 | 33.62 | +0.0259 / +0.61 | +0.0114 / +0.21 | +0.0063 / +0.45 |
+| `S`, one exact address (11, 3 seeds) | 2,295 | 0.9238 | 33.44 | +0.0427 / +1.33 | +0.0113 / −0.06 | +0.0052 / −0.35 |
+| `SDY x2`, one exact address (11) | 7,389 | 0.9267 | 33.73 | +0.0480 / +1.81 | +0.0138 / +0.07 | +0.0066 / −0.12 |
 | `S` table, fine-tuned (10) | 3,850 | 0.9251 | 33.83 | +0.0453 / +2.08 | +0.0116 / +0.02 | +0.0060 / −0.08 |
 | DirNet C: a blend chosen per pixel (12) | 8,878 | 0.9277 | 33.80 | +0.0481 / +1.46 | +0.0150 / +0.21 | +0.0081 / +0.22 |
 | DirNet D: C and a learned correction (12) | 11,598 | 0.9303 | 34.22 | +0.0526 / +2.11 | +0.0162 / +0.29 | +0.0100 / +0.63 |
@@ -1375,8 +1381,8 @@ Every 320×180-step graph in `dist/upscale/`, measured 2026-10-26: WebGPU, GPU-r
 graph capture, medians of three interleaved rounds (every configuration within 3% of itself
 across rounds), driven headless over the DevTools protocol so the page ran exactly as it does
 by hand. A tile is 640×360 out, nine of them a 1080p frame; a frame graph is the whole frame
-in one run. Notebook 11 has no trained graphs, so its rows are its graphs untrained, at the
-same size: a table's speed does not depend on what is in it.
+in one run. Notebook 11's rows were first measured untrained, since a table's speed does not
+depend on what is in it, and again once trained: the same to 1%.
 
 | Model | ops / LR px | fp32 tile | fp16 tile | fp16 frame graph | **1080p frame** |
 | --- | --- | --- | --- | --- | --- |
@@ -1389,14 +1395,14 @@ same size: a table's speed does not depend on what is in it.
 | DirNet D (12) | 11,598 | 1.069 | 0.950 | 7.72 | 7.7 ms |
 | `S` table, interpolated (10) | 3,850 | 1.720 | 7.36 ‡ | 44.0 ‡ | 15.5 ms |
 | `SDY x2` table, interpolated (10) | 16,724 | **8.350** | 30.76 ‡ | 264 ‡ | **75 ms** |
-| `S`, one exact address (11, untrained) | — | 0.322 † | | | 2.9 ms |
-| 3×3 pattern filter (11, untrained) | — | 0.520 † | | | 4.7 ms |
-| **`SDY x2`, one exact address (11, untrained)** | — | **0.957 †** | | | **8.6 ms** |
+| `S`, one exact address (11) | 2,295 | 0.323 † | | 2.27 † | 2.3 ms |
+| 3×3 pattern filter (11) | 2,032 | 0.522 † | | 3.94 † | 3.9 ms |
+| **`SDY x2`, one exact address (11)** | 7,389 | **0.966 †** | | 7.33 † | **7.3 ms** |
 
 ‡ refuses graph capture, so timed without it: some of its nodes run on the CPU, and the
 round trips are most of the time (the GPU's own share is 1.5 ms of the `S` tile's 7.4).
-† after the change to notebook 11 described below; as first written its graphs took 5.7,
-8.3 and 25.0 ms a tile.
+† float32 only (a float16 tap can round into the next row), and after the change to
+notebook 11 described below; as first written its graphs took 5.7, 8.3 and 25.0 ms a tile.
 
 - **The table that wins on screens is the one graph on the page that cannot run.** `SDY x2`
   costs 75 ms a 1080p frame, 19 times notebook 8's model (3.9 ms) for +0.0013 SSIM-Y on
@@ -1416,8 +1422,9 @@ round trips are most of the time (the GPU's own share is 1.5 ms of the `S` tile'
   are off the GPU; `Cast` to int32, int32 `Add`, `Floor`, and `Gather` with int32 indices
   are on it. Notebook 11 now sums an address with three `Add`s, rounds with
   `floor(x + 0.5)` and adds its pattern digits in float32 (exact at these sizes), and checks
-  the same rows by hand as before. Its `SDY x2` runs a 1080p frame in 8.6 ms - in the same
-  tier as DirNet C - and what it scores is the open question (see Next).
+  the same rows by hand as before. Its `SDY x2` runs a 1080p frame in 7.3 ms, in the same
+  tier as DirNet C - but it scores +0.048 SSIM-Y on screens, not the interpolated table's
+  +0.064, and under notebook 8's model (see "Notebooks").
 - **float16 is not a speed-up for a table.** Both of notebook 10's float16 graphs leave the
   GPU (its integer arithmetic on halves), and notebook 11 cannot use float16 at all, since
   a tap can round into the next row. Every other model here is 10–23% faster in fp16.
@@ -1436,7 +1443,8 @@ replaces the ones it owns.
 | **notebook 8's, told the host's path** | **0.9370** | **+0.0434** | **3.9 ms** | **one graph, baked at 0.46 bpp** |
 | DirNet D | 0.9303 | +0.0366 | 7.7 ms | one graph |
 | `SDY x2` table, interpolated | 0.9343 | +0.0477 | 75 ms | one graph, 5 MB |
-| `SDY x2` table, one exact address | training | — | 8.6 ms | one graph, 3.3 MB |
+| `SDY x2` table, one exact address | 0.9267 | not measured | 7.3 ms | one graph, 3.3 MB |
+| `S` table, one exact address | 0.9238 | not measured | 2.3 ms | one graph, 0.9 MB |
 | + the host's post-filter, every 5th frame | +0.005–0.007 on a model | +0.0015–0.0065 | no graph yet | a side channel and a host fit |
 
 SSIM-Y on the 3,523 validation patches; same bits on notebook 15's whole clips at 0.46 bpp,
@@ -1449,9 +1457,13 @@ where most tiles do not change. What it needs from the stream is that the host d
 with swscale's bicubic and no loop filter, which is what it does today; for a host that does
 anything else, notebook 8's blind model is the safe graph and is not published yet.
 
-**What could beat it is a table that runs.** Notebook 11 is training. If its exact-address
-`SDY x2` keeps most of notebook 10's lead on screens, it is a second tier: a little better on
-screens, worse on photos and video, at twice the browser time.
+**No table beats it in a browser.** Notebook 11 made a table run - 7.3 ms a frame against
+75 - but reading one binned entry instead of interpolating keeps only three quarters of the
+lead on screens (+0.048 SSIM-Y, against +0.064 interpolated and +0.062 for notebook 8's
+blind model), and it is behind on photos and video. What notebook 11 does leave is the
+cheapest model that clearly beats bicubic: its `S` table, 0.9238 SSIM-Y and +0.043 on screens
+- about notebook 4's on screens - in 2.3 ms, a fallback for a GPU that cannot afford
+notebook 8's 3.9.
 
 **The post-filter is the one hint worth building**, and the only idea here that is not a
 model: it improves every client at every bitrate for about 1.5% of the bits. It needs a
@@ -1475,9 +1487,9 @@ decide.
 - **Publish notebook 8's blind model** beside the told one, and drop the 0.2 and 1.0 bpp
   told graphs (four of its seven files), which can only be worse than the 0.46 one. Fold the
   second seed and the two checks under "What a told graph needs" into the notebook.
-- **Finish notebook 11**: it is training now. Score its `SDY x2` against notebook 8's model,
-  not notebook 4's, and measure its trained graphs in the browser; if it keeps most of the
-  table's lead on screens, add it to notebook 15 as a client.
+- **Decide on a fallback tier** from the iGPU measurement: if notebook 8's model misses the
+  frame budget there, notebook 11's `S` table (2.3 ms here) is the candidate; add it to
+  notebook 15 first, to see what it is worth on whole streamed clips.
 - **Compare against notebook 8's model, not notebook 4's**, in notebooks 11–14: each was
   written when notebook 4's was the best, and it no longer is.
 - **Look at photos on whole clips**: notebook 8's model is behind notebook 4's there
