@@ -20,7 +20,7 @@ below):
 
 | Folder | Problem | State |
 | --- | --- | --- |
-| [`src/upscale/`](src/upscale/summary.md) | more pixels out than in | a static baseline, three learned models and a strategy sweep |
+| [`src/upscale/`](src/upscale/summary.md) | more pixels out than in | fifteen notebooks: static baselines, nine ways to build a model, host hints, and the bits-against-compute trade-off; nothing shipped to the client yet |
 | [`src/frame_gen_intra/`](src/frame_gen_intra/summary.md) | interpolate between two frames | not started |
 | [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | extrapolate past the newest frame | not started |
 
@@ -60,9 +60,12 @@ uv run src/mock/make_mock_models.py <models folder> # or anywhere else
 uv sync
 ```
 
-Note that torch installs as a **CPU build** despite the CUDA index declared in
-`pyproject.toml` — the index is there but not wired to the `torch` requirement, so every
-number recorded so far is a CPU number.
+The CUDA index declared in `pyproject.toml` is not wired to the `torch` requirement, so
+torch comes from PyPI, and what that is depends on the platform: on Linux (and WSL) the
+PyPI wheel is a **CUDA build** (`2.13.0+cu130`), which is what every notebook from 4 on
+trained with, on an RTX 3090; on Windows it is a **CPU build**, which is what notebooks 1–3
+ran on. `onnxruntime` is the CPU package either way, so every `cpu_ms` a notebook writes
+into a graph is a CPU number. GPU numbers for a graph come from the benchmark page.
 
 ## Running the benchmark server
 
@@ -97,7 +100,8 @@ anything else. Run whichever notebooks you want on the page:
   a family of geometries for the page to measure on whatever GPU is in front of it.
 - `src/upscale/06_upscale_reparam.ipynb` — the reparameterized 32-16 the first strategy sweep
   picked, trained on the stream-degraded data and published at the 320×180 step a client
-  runs, with bilinear and bicubic beside it. Notebook 4 no longer supports that pick.
+  runs, with bilinear and bicubic beside it - the page's 320×180 baselines. Notebook 4 no
+  longer supports that pick.
 - `src/upscale/07_upscale_luma.ipynb` — a residual model that corrects brightness only (colour
   stays bicubic), with residual blocks, published at the same 320×180 step.
 - `src/upscale/08_upscale_screens.ipynb` — notebook 7's model trained with desktop screens in
@@ -111,10 +115,27 @@ anything else. Run whichever notebooks you want on the page:
   into a table of megabytes, and is thrown away; the model reads five corners of a table cell
   per look-up, in four rotations, through one to three tables and one or two stages. Colour
   stays bicubic. Published at the 320×180 step.
+- `src/upscale/11_upscale_fastlut.ipynb` — look-up tables read at one exact address, with no
+  interpolation: a table addressed by the centre and binned differences from it, and a 3×3
+  sign pattern that looks up a filter. Exports float32 only, at the 320×180 step.
+- `src/upscale/12_upscale_dirnet.ipynb` — a directional upscaler: four learned 1D
+  interpolators per sub-pixel (row, column, two diagonals), chosen per pixel by a tiny
+  network. Three variants, from one fixed 5×5 filter to a blend with a learned correction;
+  published at the 320×180 step.
+- `src/upscale/13_upscale_hints.ipynb` — not a model: what a few bits from the host's
+  full-resolution frame are worth - a content label to route on, or filters the host fits on
+  the client's output. Trains nothing and exports nothing.
+- `src/upscale/14_upscale_postfilter.ipynb` — notebook 13's post-filter on whole streamed
+  clips, refitted on a schedule, against a plain stream at the same total bits. Exports
+  nothing.
+- `src/upscale/15_upscale_tradeoff.ipynb` — every published client and the hint in one
+  currency, bandwidth: what bitrate plain bicubic would need for the same quality. Exports
+  nothing.
 
 The code the notebooks share lives in `src/upscale/helpers/`: `models.py` (the bicubic skip
 and the models built on it), `training.py` (loading the patches, the training loop, scoring,
-checkpoints), `speed.py` (timing), `metrics.py` (**how a frame is scored**, in Y'CbCr with
+checkpoints), `speed.py` (timing), `postfilter.py` (the host-fitted post-filter of
+notebooks 13–15), `metrics.py` (**how a frame is scored**, in Y'CbCr with
 luma weighted six times either chroma channel, because that is the ratio an eye reads them
 at), `tiles.py` (the tile geometry: how a frame is cut into tiles and what each costs) and
 `webexport.py` (the export call, and the one place the tile step and the WebGPU operator
@@ -234,6 +255,11 @@ desktop-streamer-ai/
 │       ├── 08_upscale_screens.ipynb  the same, trained with desktop screens, blind and told the stream
 │       ├── 09_upscale_dct.ipynb      gains on the DCT of overlapping luma blocks; colour stays bicubic
 │       ├── 10_upscale_lut.ipynb      look-up tables: megabytes of stored answers, a few hundred ops a pixel
+│       ├── 11_upscale_fastlut.ipynb  look-up tables read at one exact address, no interpolation
+│       ├── 12_upscale_dirnet.ipynb   four 1D interpolators per pixel, and a network choosing between them
+│       ├── 13_upscale_hints.ipynb    what bits from the host's full-resolution frame are worth
+│       ├── 14_upscale_postfilter.ipynb  the host-fitted post-filter on whole streamed clips
+│       ├── 15_upscale_tradeoff.ipynb  bits, compute and quality in one currency: bandwidth
 │       ├── helpers/                  modules the notebooks import, never run on their own
 │       │   ├── sources.py            reads the downloaded datasets back
 │       │   ├── motion.py             a still image as a moving clip: slide, zoom or hold
@@ -243,6 +269,7 @@ desktop-streamer-ai/
 │       │   ├── training.py           loaders, the training loop, scoring, checkpoints
 │       │   ├── metrics.py            how a frame is scored: Y'CbCr, luma weighted 6:1:1
 │       │   ├── speed.py              timing and multiply-accumulate counts
+│       │   ├── postfilter.py         the host-fitted post-filter: classes, fits, bits
 │       │   ├── tiles.py              the tiling geometry: step, halo, kept, which tile to run
 │       │   └── webexport.py          the export call, the tile step and the op budget
 │       ├── data/                     gitignored — samples the notebooks write

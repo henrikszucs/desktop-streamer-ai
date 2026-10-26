@@ -3,34 +3,37 @@
 Reconstructing a higher resolution frame from the one the stream delivered, so a client can
 be sent fewer pixels than it displays.
 
-> **Status: a baseline, three learned models, a sweep over six ways of building one, and
-> the geometry to run one at.**
-> `upscale_web` clears the frame budget: **0.19 ms per tile, 7 ms for a 1080p frame** on an
-> NVIDIA Ampere card in Chromium, at **+6.9 dB over bicubic**. The measurement has since
-> changed — quality is scored in Y'CbCr with luma weighted six times either chroma channel,
-> because that is the ratio an eye reads them at — and the strategy sweep, re-run on the
-> stream-degraded set, measures **a noise floor of 0.0004 SSIM-Y and 0.13 dB**, under which
-> every 32-16-sized idea it tried is a tie. All still synthetic frames, so the dB is a number
-> about this dataset and the ms is a number about that card. Nothing in desktop-streamer's `src/` calls any of
-> it yet.
+> **Status: fifteen notebooks, and one model ready to ship: notebook 8's.** Nothing in
+> desktop-streamer's `src/` calls any of it yet; the client still runs the mock graphs.
 >
-> **The shape it runs at is now measured too, and the shipped one is wrong.** A tile is
-> **640×360 out, from a 320×180 step and a 328×188 input** — 6.8 ms a 1080p frame against
-> 11.7 ms at the published 128 step, and the same tile divides 720p, 1440p and 4K exactly.
-> Everything about geometry is charged in **nanoseconds per output pixel**, because a run
-> is a tile and a rate of runs cannot compare two tile sizes.
+> **The best model overall is notebook 8's**: residual blocks correcting luma only (28,120
+> operations an LR pixel), trained with desktop screens in the data and told the host's
+> encoder path. **0.9370 SSIM-Y against bicubic's 0.9049** on 3,523 stream-degraded
+> validation patches, and **3.9 ms a 1080p frame** in Chrome on an RTX 3090 (a float16 frame
+> graph; 4.5 ms as nine 320×180 tiles). Screens were the missing data (+0.019 SSIM-Y on
+> them); the encoder path is worth telling it (+0.0021), the bitrate is not, and told the
+> wrong filter it is worse than not told at all.
 >
-> **Of eight ways to build the model, one pays, and it is the one that costs: residual
-> blocks**, +0.0023 SSIM-Y over the 32-16 control (six times the seed spread) at 2.2× the
-> memory traffic. Reparameterization, which notebook 6 was chosen for, buys nothing
-> measurable on the stream-degraded set.
+> **The best model on screens is a look-up table, and it does not run.** Notebook 10's
+> two-stage `SDY x2` table gains +0.064 SSIM-Y on screens (+0.062 for notebook 8's blind
+> model) and costs **75 ms a 1080p frame**: interpolating a 4-D table is dozens of small
+> operators. Notebook 11 reads one exact entry instead; once three integer operators the
+> WebGPU provider has no kernels for are rewritten, its `SDY x2` graph runs in **8.6 ms**.
+> Its training has not run yet - one epoch already puts it at +0.045 SSIM-Y on screens.
 >
-> **Screens were the missing data, and the host's encoder path is worth telling the model;
-> the bitrate is not.** Notebook 7's model trained with desktop screens gains +0.062 SSIM-Y
-> over bicubic on them, against +0.043 for the same model trained without, and +0.082 at
-> 100% display scale. Told the downscale filter and the loop filter it gains another
-> +0.0021 SSIM-Y overall (two seeds) and +0.42 dB luma on what the host sends today. Told
-> the wrong filter it is worse than not told at all.
+> **Of everything else tried, the host's post-filter pays.** Gains on a DCT (9) are too
+> weak; a directional upscaler (12) beats notebook 4's model on screens at 41% of its
+> operations but runs slower than notebook 8's in the browser; routing between models by
+> content is worth nothing (13). A 25-class filter the host fits on the client's own
+> output every 5th frame (13, 14) costs 1.1–1.6% of the video's bits and beats spending
+> those bits on H.264 at every bitrate and kind - but it has no client graph and no side
+> channel yet.
+>
+> **Operations per pixel do not predict browser time**, which is why every graph from
+> notebook 4 on is now measured in the browser ("Results at the client's tile"): what a
+> provider runs natively, how many operators a graph has, and whether any node falls back
+> to the CPU decide it. The tile is 640×360 out from a 320×180 step and a 328×188 input
+> (notebook 5), and everything about geometry is charged in nanoseconds per output pixel.
 
 **One notebook is one model.** A notebook owns its architecture, its training, its numbers
 and its export cell, and publishes straight into `dist/upscale/` at the repo root — so a
@@ -98,9 +101,9 @@ Run in order, from this folder:
   starts at 1e-4. The model is measured against bilinear, bicubic and Lanczos-3 overall and by
   bitrate and content, collapsed, checkpointed to `checkpoints/upscale_reparam.pt`, and
   published at the client's 320×180 step (float32, float16 and a whole-1080p-frame graph)
-  with bilinear and bicubic beside it as the page's baselines. Not run yet:
-  `dist/upscale/` was emptied of every graph made on the old data, so until it runs the
-  page has no models. Its premise has not held up: the strategy sweep re-run on this data
+  with bilinear and bicubic beside it as the page's baselines. Its graphs in `dist/upscale/`
+  are from a run on 2026-10-12, on the patch set before screens were added; the notebook
+  has not been run since and keeps no outputs. Its premise has not held up: the strategy sweep re-run on this data
   finds reparameterization worth nothing measurable, and explains the 1e-3 failure — the
   branches switch off 14 of the 16 narrow channels within 20 steps (see "Strategies").
 - `07_upscale_luma.ipynb` — **a residual model that corrects brightness only.** Colour is
@@ -135,11 +138,53 @@ Run in order, from this folder:
   — gains chosen from the truth — before training. All `Conv`, `Concat`, `DepthToSpace`,
   `Relu`, `Add`, plus one `Mul` (the gains), which is outside the measured budget. Counted
   from the graphs: 4,600 operations and 875 bytes per LR pixel for the fixed model, 6,104 and
-  1,061 deciding through 32 channels, against 28,120 and 2,536 for notebook 7's. **Not run
-  yet.** Its smoke run (one epoch each) puts the ceiling high — gains chosen from the truth
-  reach 0.974 SSIM-Y on the inner 112 px, where bicubic is at 0.905 — and the models, one
-  epoch in, far under it: on the whole cores 0.906 fixed and 0.913 deciding through 32,
-  against 0.905 for bicubic and 0.929 for notebook 4's model.
+  1,061 deciding through 32 channels, against 28,120 and 2,536 for notebook 7's. The ceiling
+  is high — gains chosen from the truth reach 0.974 SSIM-Y on the inner 112 px, where
+  bicubic is at 0.905 — and the trained models far under it: 0.9107 fixed and 0.9172
+  deciding through 32, against 0.9049 for bicubic and 0.9292 for notebook 4's model. See
+  "Fewer operations".
+- `10_upscale_lut.ipynb` — **look-up tables instead of arithmetic** (SR-LUT, MuLUT). A
+  network that reads four luma pixels trains as itself; then it answers every question it
+  can be asked at 17 points along each tap, the answers are a table, and the network is
+  thrown away. The model reads a cell's five corners per look-up (simplex interpolation), for
+  each kernel (S, D, Y) in four rotations, through one or two stages; the tables are then
+  fine-tuned as the parameters (MuLUT's LUT-aware fine-tuning). Colour stays bicubic. The
+  two-stage `SDY x2` table is the best model on screens in this project (+0.064 SSIM-Y over
+  bicubic, against +0.043 for notebook 4's model) and the slowest graph on the page: 75 ms
+  for a 1080p frame — see "The browser benchmark". Publishes `S` and `SDY x2` at the 320×180
+  step.
+- `11_upscale_fastlut.ipynb` — **look-up tables read at one exact address.** The cost of
+  notebook 10's graphs is the interpolation (some sixty full-size tensors a stage), so this
+  reads one entry with no weights: the row is the centre's level in 8 steps and the three
+  other taps' differences from it in 19 bins, fine near 0 and coarse far from it (S and
+  `SDY x2`, MuLUT's kernels as before), or a 3×3 neighbourhood's pattern of signs (3⁸ rows),
+  whose row is a filter applied to the differences. Float32 only, because a float16 tap can
+  round into the neighbouring row. **Not run** — its training, five runs to convergence, is
+  roughly three hours on the RTX 3090, judging by notebook 10's. Its untrained graphs have
+  been timed in the browser (the speed of a table does not depend on what is in it): see
+  "The browser benchmark".
+- `12_upscale_dirnet.ipynb` — **a directional upscaler.** Every sub-pixel gets four learned
+  1D interpolators, along its row, its column and both diagonals, each starting as the
+  cubic kernel along its line; a predictor reading 7×7 LR pixels chooses between them per
+  pixel (a softmax) and a gate says how far to move from bicubic toward the blend. B blends
+  the same way everywhere (one 5×5 convolution), C chooses per pixel, D adds a learned
+  correction. C gains +0.048 SSIM-Y on screens at a third of notebook 4's operations; D beats
+  notebook 4's model on screens and by 0.0011 SSIM-Y overall.
+- `13_upscale_hints.ipynb` — **what the host's full-resolution frame is worth.** Trains
+  nothing. Three hints, priced in bits: a content label per tile to route between models, a
+  class-wise 5×5 filter on bicubic fitted by the host (what VVC's adaptive loop filter does),
+  and the same as a post-filter on every published model. Routing is worth nothing; the
+  post-filter is worth +0.0065 SSIM-Y and +0.87 dB luma on notebook 4's model for 6.1 kbit an
+  update. See "Hints from the host".
+- `14_upscale_postfilter.ipynb` — **the post-filter on a real stream.** Whole 720p clips, the
+  host fitting on its own decoded frames on a schedule (every frame, every 5th, a frame
+  late, once a clip), scored against the plain stream at the same total bits, read off its
+  own rate curve. Every 5th frame is the schedule: 1–1.6% of the video's bits, and positive
+  at every bitrate and kind.
+- `15_upscale_tradeoff.ipynb` — **bits, compute and quality in one currency.** For every
+  published client, with and without the hint, how many bits plain H.264 and bicubic would
+  need for the same SSIM-Y, over the bits the client's stream used: its worth in
+  bandwidth. See "Bits against compute".
 
 The notebooks share their code through `helpers/`, so each one reads as a short list of
 steps: `models.py` holds the bicubic skip and the models built on it (`PlainUpscaler`,
@@ -155,19 +200,21 @@ with the `psnr-rgb` column, not with `wpsnr`.
 Each model notebook owns its own export cell and writes its `.onnx` into `dist/upscale/`
 at the repo root through `helpers/webexport.py`. That is all publishing is: the benchmark server
 lists whatever graphs are in that folder, per request, so there is no manifest for a
-re-export to leave stale. Twelve graphs reach the page when every notebook has been run:
-the three static filters, the bicubic-residual model, the four `upscale_web` candidates,
-and the two `upscale_strategies` publishes at two precisions each. (That count predates
-notebooks 6 and 7, and the strategy sweep now publishes three graphs for each of its two.)
+re-export to leave stale. 55 graphs are on the page today: notebooks 1–3's eight (seven at
+the old 128 step, one at 256), and every model from notebook 4 on at the 320×180 step, most at float32, float16
+and float16 as a whole 1080p frame.
 
 `data/` and `checkpoints/` are gitignored: they are what training leaves behind. `dist/` is
 committed, because it holds only what is finished and published, and those models took
 long to train. The export cells need
 `onnx` and `onnxruntime`, which are project dependencies.
 
-Every number below is CPU, 12 threads. The installed torch is a CPU build (`2.13.0+cpu`)
-even though `pyproject.toml` declares a CUDA index, so nothing here has been measured on a
-GPU. Runtimes are forward pass only — no decode, no copy, no PNG encoding.
+Notebooks 1–3 ran on Windows, where torch from PyPI is a CPU build (`2.13.0+cpu`), so their
+runtimes are CPU, 12 threads. Every notebook from 4 on trained in WSL, where the same
+requirement installs a CUDA build (`2.13.0+cu130`), on an RTX 3090. `onnxruntime` is the CPU
+package everywhere, so every `cpu_ms` written into a graph is a CPU number; GPU numbers for a
+graph are the browser's ("The browser benchmark"). Runtimes are forward pass only — no
+decode, no copy, no PNG encoding.
 
 ## How much the stream costs the LR (`00_data_preprocess.ipynb`)
 
@@ -910,6 +957,155 @@ it nothing over the default.
   which path it runs, and the client would need the blind graph wherever the answer is not
   a path the model knows.
 
+## Fewer operations: gains, tables, directions (notebooks 9–12)
+
+Four notebooks asked whether notebook 7's body (28,120 operations an LR pixel) could be beaten
+or matched for much less arithmetic. All four keep colour bicubic and correct luma only; all
+train to convergence on the screens patch set with notebook 8's recipe; all are measured on
+the same 3,523 validation patches. Gain over bicubic, SSIM-Y / luma PSNR dB:
+
+| | ops / LR px | ssim-y | psnr-y | screens | photos | video |
+|---|---|---|---|---|---|---|
+| bicubic | 0 | 0.9049 | 33.18 | | | |
+| DirNet B: one 5×5 filter (12) | 1,800 | 0.9096 | 33.35 | +0.0095 / +0.30 | +0.0071 / +0.14 | −0.0001 / +0.11 |
+| DCT, fixed gains (9) | 4,600 | 0.9107 | 33.45 | +0.0114 / +0.38 | +0.0085 / +0.24 | +0.0002 / +0.21 |
+| DCT, gains decided through 32 (9) | 6,104 | 0.9172 | 33.45 | +0.0227 / +0.45 | +0.0129 / +0.14 | +0.0044 / +0.20 |
+| `S` table, fine-tuned (10) | 3,850 | 0.9251 | 33.83 | +0.0453 / +2.08 | +0.0116 / +0.02 | +0.0060 / −0.08 |
+| DirNet C: a blend chosen per pixel (12) | 8,878 | 0.9277 | 33.80 | +0.0481 / +1.46 | +0.0150 / +0.21 | +0.0081 / +0.22 |
+| DirNet D: C and a learned correction (12) | 11,598 | 0.9303 | 34.22 | +0.0526 / +2.11 | +0.0162 / +0.29 | +0.0100 / +0.63 |
+| **`SDY x2` table, fine-tuned (10)** | 16,724 | **0.9343** | 34.63 | **+0.0643 / +3.30** | +0.0167 / +0.38 | +0.0102 / +0.64 |
+| notebook 4's model, trained before screens | 28,120 | 0.9292 | 34.45 | +0.0425 / +1.75 | +0.0217 / +0.74 | +0.0122 / +1.20 |
+| notebook 8's model, blind (3 seeds) | 28,120 | 0.9348 | 34.67 | +0.062 / +2.99 | +0.019 / +0.46 | +0.012 / +0.88 |
+| notebook 8's model, told the path (2 seeds) | 28,120 | **0.9370** | **34.93** | +0.063 / +3.07 | **+0.024 / +0.73** | **+0.014 / +1.30** |
+
+The rulers: `decide 8` at three seeds 0.0008 SSIM-Y apart (notebook 9), the `S` network at
+three seeds 0.0003 (notebook 10, which notebook 12 borrows).
+
+- **Gains on a DCT are not enough.** The ceiling is high — gains chosen from the truth reach
+  0.974 SSIM-Y on the inner 112 px, against 0.905 for bicubic — but a fixed gain table is
+  barely better than a fixed filter, and deciding per block buys +0.0065 over it. Notebook 4's
+  model is 0.012 SSIM-Y ahead of the best of them. Dropped.
+- **Tables are the best model on screens in this project.** Two stages of three kernels,
+  `SDY x2`, gain +0.064 SSIM-Y and +3.3 dB on screens, and filling its network into a table at
+  17 points costs 0.0023 SSIM-Y that fine-tuning wins back (+0.0024). On photos and video they are
+  behind any model that computes. Most of a table is memory nothing reads: 99% of the `S`
+  table's reads land in 15% of its cells, and 85% within one step of its diagonal - the
+  observation notebook 11 is built on.
+- **Choosing a direction per pixel is what DirNet is worth.** C over B is +0.018 SSIM-Y; the
+  learned correction (D over C) adds +0.0026. D beats notebook 4's model at 41% of its
+  operations - by 0.010 SSIM-Y on screens and 0.0011 overall - and loses to it on photos
+  and video. The predictor did not learn which way an edge runs: on screens it spreads its
+  choice over the row, the column and the other diagonal (31%, 26% and 30%) much as it does
+  on photos and video, which is what sent notebook 13 to ask the host.
+- **None of them beats notebook 8's own model overall**, which notebooks 10–14 do not compare
+  against: they compare against notebook 4's, trained before the set had screens. Notebook
+  8's blind model ties the `SDY x2` table on screens (+0.062 against +0.064) and is ahead on
+  photos and video; told the host's path, it is the best model here on every kind but
+  screens, where it is within 0.0013 of the table. It costs what notebook 4's does - and in
+  the browser that is 3.9 ms a 1080p frame against the table's 75 (see "The browser
+  benchmark").
+
+## Hints from the host (notebooks 13–14)
+
+The host has the full-resolution frame it shrank. A *hint* is a few bits it works out from it
+and sends with the stream. Notebook 13 prices three, on the validation patches with the
+host fitting on each source's other 7 frames; notebook 14 takes the one that paid to whole
+720p clips. The host's default stream is 0.46 bits per LR pixel, about 238 kbit a frame.
+
+**A routing hint is worth nothing.** A label per tile (screen or not) sends screens to the
+table and the rest to notebook 4's model. Routing itself pays a little - 0.9361 SSIM-Y,
++0.0018 over the table alone - and the client does it with its own classifier on the LR, at
+zero bits (87% right). The host's label adds +0.0004 to that and the host's choice of the best
+of three models per tile +0.0010: nothing worth even the 127–201 bits a frame they cost.
+
+**A post-filter fitted by the host is.** The client sorts every LR pixel into 25 classes by
+the direction and strength of its edges (VVC's adaptive loop filter's rule); the host fits,
+per class, the 5×5 filter that best turns the client's picture into its own HR frame, and
+sends the coefficients as 10-bit differences from a zero-bit filter built into the client.
+On top of every published model, about 6.1 kbit an update:
+
+| client, ssim-y | alone | + built-in filters, zero bits | + the host's filters | the host's gain, ssim-y / dB |
+|---|---|---|---|---|
+| bicubic | 0.9049 | 0.9144 | 0.9239 | +0.0095 / +0.91 |
+| notebook 4 | 0.9292 | 0.9293 | 0.9358 | +0.0065 / +0.87 |
+| DirNet D | 0.9303 | 0.9300 | 0.9365 | +0.0065 / +0.94 |
+| `SDY x2` table | 0.9343 | 0.9340 | 0.9392 | +0.0052 / +0.94 |
+
+(bicubic's filter is four filters a class, one per sub-pixel, and 19.2 kbit an update.) The
+built-in filters help bicubic and buy nothing on a model, so on a model what pays is the
+host's knowledge of the frame, not the filter shape. Across sources,
+doubling the video's bitrate buys notebook 4's model +0.0143 ± 0.0062 SSIM-Y, which puts
+6.1 kbit of the same bits at +0.0005: the filter is worth about ten times its bits.
+
+**On a real stream** (notebook 14: 8 clips each of screens, photos and video, notebook 4's
+model, streamed the way the host sends today at five bitrates, and every hinted stream set
+against the plain one at the same *total* bits read off the plain stream's own curve):
+
+| schedule, at 0.46 bpp | screens | photos | video | cost, of the video's bits |
+|---|---|---|---|---|
+| every frame | +0.0053 / +0.43 | +0.0027 / +0.36 | +0.0034 / +1.30 | 5–8% |
+| every frame, used a frame late | +0.0047 / +0.38 | +0.0018 / +0.32 | +0.0029 / +1.17 | 5–8% |
+| **every 5th frame** | **+0.0049 / +0.40** | **+0.0020 / +0.33** | **+0.0030 / +1.14** | **1.1–1.6%** |
+| once a clip | −0.0043 / +0.34 | −0.0065 / +0.06 | +0.0019 / +1.03 | 0.2% |
+
+Gain over the client with only its built-in filter, SSIM-Y / dB luma. At the same total
+bits, every 5th frame is the only schedule positive at every bitrate and kind (+0.0006 to
++0.0119 SSIM-Y); sent every frame it loses to the plain stream on photos below 0.7 bpp and
+on screens at 0.15, and sent once a clip it goes stale. A filter used one frame late keeps most of its gain, so the host
+need not delay a frame to fit one.
+
+The hint has no graph yet: what it costs on the client (about 280 operations an LR pixel,
+worked out in notebook 15) is an estimate, and no side channel for it exists in the stream.
+
+## Bits against compute (`15_upscale_tradeoff.ipynb`)
+
+For every published client, with and without the host's post-filter (refitted every 5th
+frame), on notebook 14's 24 whole 720p clips streamed the way the host sends today: how many
+bits plain H.264 with bicubic would need for the same SSIM-Y, over the bits the client's
+stream really used - its **worth in bandwidth** - and the SSIM-Y it adds over plain H.264 at
+the same bits. The plain stream is measured up to 3.3 bits per LR pixel so the best clients
+have something to be matched against. At the host's default 0.46 bpp, with what each costs
+in the browser (from "Results at the client's tile"):
+
+| client | 1080p, browser | screens: worth, same bits | photos | video |
+|---|---|---|---|---|
+| bicubic + hint | 0 + the hint ‡ | ×1.28, +0.0112 | ×1.26, +0.0120 | ×1.64, +0.0089 |
+| DirNet B | 0.8 ms | ×1.08, +0.0043 | ×1.07, +0.0027 | ×0.83, −0.0022 |
+| DirNet C | 7.1 ms | ×1.53, +0.0357 | ×1.16, +0.0127 | ×1.29, +0.0086 |
+| DirNet D | 7.7 ms | ×1.70, +0.0366 | ×1.20, +0.0147 | ×1.52, +0.0108 |
+| notebook 4 | 3.9 ms | ×1.45, +0.0291 | **×1.44, +0.0236** | ×1.47, +0.0128 |
+| **notebook 8** (told the host's path) | **3.9 ms** | **×2.14, +0.0434** | ×1.23, +0.0164 | **×1.59, +0.0150** |
+| **notebook 8 + hint** | 3.9 ms + the hint ‡ | **×2.69, +0.0461** | ×1.29, +0.0189 | ×1.76, +0.0168 |
+| `SDY x2` table | 75 ms | ×2.52, +0.0477 | ×1.21, +0.0154 | ×1.48, +0.0111 |
+| `SDY x2` table + hint | 75 ms + the hint ‡ | ×3.18, +0.0492 | ×1.32, +0.0197 | ×1.92, +0.0156 |
+
+Worth is the geometric mean over the clips some bitrate reaches; on screens 7 of the 8 clips
+are reached by **no** bitrate at all - H.264 codes a still screen at the same size whatever
+it is given, so no bandwidth buys what a model adds there, and the same-bits column is the one
+to read. ‡ the hint has no graph; notebook 15 works its client side out at about 280
+operations an LR pixel and 1.7% of the video's bits.
+
+- **Notebook 8's model is the client to ship.** At the cost of notebook 4's it adds +0.0434
+  SSIM-Y on screens at the same bits, where notebook 4's adds +0.0291, and it is the best
+  unhinted client on video. Only the 75 ms table beats it on screens, by 0.0043.
+- **It gives up photos.** On whole photo clips it is behind notebook 4's model (+0.0164
+  against +0.0236), which the patch scores did not show (there it was ahead, +0.024 against
+  +0.022). The clips are 8 sources a kind, so this is a direction to check rather than a
+  measurement; for a desktop stream, screens and video are what matter.
+- **The hint pays on every client**, most where the client is weakest: it lifts bicubic to
+  ×1.26–1.64 and DirNet B from ×0.83 to ×1.66 on video, and adds +0.0015–0.0065 SSIM-Y at
+  the same bits to every other learned model - least to notebook 8's and the table. A cheap client with the hint is not a substitute for a
+  good one on screens, though: bicubic with it adds +0.0112 there, notebook 8 alone +0.0434.
+- **The traditional stream saturates early on screens**: bicubic gains 0.0148 SSIM-Y from
+  0.46 to 3.3 bpp on screens, where notebook 8 adds 0.0434 at 0.46. Spending compute beats
+  spending bits on a desktop stream by a wide margin.
+
+The notebook ran for 97 minutes, most of it - by the graphs' own CPU times - notebook 10's
+table on the ONNX Runtime CPU provider. On the re-run that added notebook 8, the same-bits
+numbers of the clients it had before moved by at most 0.0004 SSIM-Y - the codec is not
+deterministic, and the clips are re-encoded each run - but a worth, a ratio read off a flat
+curve, can move far more (DirNet B + hint on screens, ×1.27 to ×1.72).
+
 ## Tiling geometry
 
 Inference on the page runs on fixed tiles, not on frames: one pinned input size, one
@@ -1122,8 +1318,8 @@ does — nearest needs none, bilinear 1, bicubic 2, every network here 4:
 | `upscale_web` | web 32-16 in fp32 / fp16 / int8, and fp16 at step 256 | 136 / 264 | 4 |
 | `upscale_strategies` | luma 24 + 2 blocks and luma 32-16 (and 32-16 leaky, from the eight-strategy run), fp32 / fp16, and fp16 as a whole 1080p frame | 328×188 / 968×548 | 4 |
 
-The results table below predates the last two rows, which have not been measured in a
-browser yet.
+The first results table below is the older graphs at the 128 step; "Results at the client's
+tile" measures every graph at the 320×180 step, which is everything from notebook 4 on.
 
 ### Results — NVIDIA Ampere, Chromium, ms per tile
 
@@ -1173,97 +1369,137 @@ float16 — the CPU provider has no half kernels for these ops, casts to float32
 same arithmetic, so `cpu_ms` shows fp16 as *slightly slower* while the browser shows it 27%
 faster. A precision is not fast or slow on its own; a provider's kernels for it are.
 
+### Results at the client's tile — NVIDIA Ampere, Chrome 155, ms per tile
+
+Every 320×180-step graph in `dist/upscale/`, measured 2026-10-26: WebGPU, GPU-resident,
+graph capture, medians of three interleaved rounds (every configuration within 3% of itself
+across rounds), driven headless over the DevTools protocol so the page ran exactly as it does
+by hand. A tile is 640×360 out, nine of them a 1080p frame; a frame graph is the whole frame
+in one run. Notebook 11 has no trained graphs, so its rows are its graphs untrained, at the
+same size: a table's speed does not depend on what is in it.
+
+| Model | ops / LR px | fp32 tile | fp16 tile | fp16 frame graph | **1080p frame** |
+| --- | --- | --- | --- | --- | --- |
+| static bilinear / bicubic (6) | 0 | 0.040 / 0.040 | — | 0.098 / 0.159 | 0.1 / 0.2 ms |
+| DirNet B, one 5×5 filter (12) | 1,800 | 0.118 | 0.102 | 0.756 | 0.8 ms |
+| DCT, fixed / decided through 32 (9) | 4,600 / 6,104 | 0.239 / 0.266 | 0.211 / 0.234 | 1.39 / 1.52 | 1.4 / 1.5 ms |
+| 32-16: reparam, luma, leaky (4, 6) | 17,080–19,392 | 0.42–0.43 | 0.34–0.35 | 2.62–2.73 | 2.6–2.7 ms |
+| luma 24 + 2 blocks: notebooks 4, 7, 8 | 28,120 | 0.646 | 0.500 | 3.91 | **3.9 ms** |
+| DirNet C (12) | 8,878 | 0.963 | 0.864 | 7.05 | 7.1 ms |
+| DirNet D (12) | 11,598 | 1.069 | 0.950 | 7.72 | 7.7 ms |
+| `S` table, interpolated (10) | 3,850 | 1.720 | 7.36 ‡ | 44.0 ‡ | 15.5 ms |
+| `SDY x2` table, interpolated (10) | 16,724 | **8.350** | 30.76 ‡ | 264 ‡ | **75 ms** |
+| `S`, one exact address (11, untrained) | — | 0.322 † | | | 2.9 ms |
+| 3×3 pattern filter (11, untrained) | — | 0.520 † | | | 4.7 ms |
+| **`SDY x2`, one exact address (11, untrained)** | — | **0.957 †** | | | **8.6 ms** |
+
+‡ refuses graph capture, so timed without it: some of its nodes run on the CPU, and the
+round trips are most of the time (the GPU's own share is 1.5 ms of the `S` tile's 7.4).
+† after the change to notebook 11 described below; as first written its graphs took 5.7,
+8.3 and 25.0 ms a tile.
+
+- **The table that wins on screens is the one graph on the page that cannot run.** `SDY x2`
+  costs 75 ms a 1080p frame, 19 times notebook 8's model (3.9 ms) for +0.0013 SSIM-Y on
+  screens and less everywhere else. Notebook 15 charges it 16,724 operations - fewer than
+  notebook 8's 28,120 - because it counts arithmetic, and a table's cost is not arithmetic:
+  it is dozens of small operators writing full tensors and two `Gather`s reading a 5 MB table at
+  random. **Operations per pixel do not rank these graphs.** DirNet C, at a third of notebook
+  8's operations, is 1.5–1.8 times as slow: its blend is five `DepthToSpace`s, a `Softmax`,
+  a `ReduceSum` and products of full-size tensors, where the residual body is seven
+  convolutions.
+- **Exact-address tables fix it, once the graph stays on the GPU.** Reading one entry
+  instead of interpolating takes `SDY x2`'s GPU time from 8.1 to 0.91 ms a tile. As first
+  written, though, notebook 11's graphs were 3 times *slower* than notebook 10's, because
+  three of their operators have no WebGPU kernel and ran on the CPU. Found with one-operator
+  probe graphs, each run under graph capture (which a session refuses outright when any
+  node leaves the GPU): **integer `ReduceSum`, `Round`, integer `Mul` and anything int64**
+  are off the GPU; `Cast` to int32, int32 `Add`, `Floor`, and `Gather` with int32 indices
+  are on it. Notebook 11 now sums an address with three `Add`s, rounds with
+  `floor(x + 0.5)` and adds its pattern digits in float32 (exact at these sizes), and checks
+  the same rows by hand as before. Its `SDY x2` runs a 1080p frame in 8.6 ms - in the same
+  tier as DirNet C - and what it scores is the open question (see Next).
+- **float16 is not a speed-up for a table.** Both of notebook 10's float16 graphs leave the
+  GPU (its integer arithmetic on halves), and notebook 11 cannot use float16 at all, since
+  a tap can round into the next row. Every other model here is 10–23% faster in fp16.
+- **A frame graph saves the per-run overhead**: 3.9 ms against 9 × 0.50 for notebook 8's
+  body, and 0.1 against 0.4 ms for the static filters - which on a frame are all dispatch.
+
 `dist/` is committed, so the page has models on a fresh clone; a notebook's export cell
 replaces the ones it owns.
 
 ## Where that leaves it
 
-| | Best static | `upscale_nn` | **`upscale_web`** | `upscale_strategies` |
-| --- | --- | --- | --- | --- |
-| PSNR (RGB), validation patches | 23.62 dB | 24.17 dB (12 epochs) / 31.25 dB (100) | **30.28 dB** | 35.67 dB † |
-| weighted PSNR, validation patches | — | — | — | **38.20 dB** † |
-| 1080p frame, WebGPU | 2 ms | 18 ms | **7 ms**, or 5 ms at step 256 | not measured yet |
-| 1080p frame, WASM | 831 ms | 1798 ms | 396 ms | not measured yet |
-| parameters | 0 | 26,796 | **9,696** | 13,156 |
-| inside the op budget | no (`Resize`) | no (`Resize`) | **yes** | **yes** |
+| | ssim-y, patches | screens, same bits | 1080p, browser | ships as |
+|---|---|---|---|---|
+| bicubic (the GPU's sampler) | 0.9049 | — | free | nothing |
+| notebook 4's model | 0.9292 | +0.0291 | 3.9 ms | one graph |
+| **notebook 8's, told the host's path** | **0.9370** | **+0.0434** | **3.9 ms** | **one graph, baked at 0.46 bpp** |
+| DirNet D | 0.9303 | +0.0366 | 7.7 ms | one graph |
+| `SDY x2` table, interpolated | 0.9343 | +0.0477 | 75 ms | one graph, 5 MB |
+| `SDY x2` table, one exact address | training | — | 8.6 ms | one graph, 3.3 MB |
+| + the host's post-filter, every 5th frame | +0.005–0.007 on a model | +0.0015–0.0065 | no graph yet | a side channel and a host fit |
 
-† `upscale_strategies` is measured on the stream-degraded set (0.2–1.0 bpp H.264), where
-bicubic reads 35.00 dB RGB and 37.30 dB weighted; the other columns are the old synthetic
-set, so that column is not comparable with its neighbours.
+SSIM-Y on the 3,523 validation patches; same bits on notebook 15's whole clips at 0.46 bpp,
+over plain H.264 with bicubic at the bits the client's stream used; browser on an RTX 3090.
 
-The frame figures in that table are all at the published 128 step, which
-`05_upscale_geometry.ipynb` has since shown to be the most expensive geometry of the ones it
-swept — the same model at 320×180 reads 6.8 ms where 128 reads 11.7 on the same card in the
-same sitting.
+**There is a model to ship, and it is notebook 8's**: the best overall on patches, the best
+unhinted client on screens and video on whole streamed clips but for a table that cannot run,
+and 3.9 ms a 1080p frame - a quarter of a 60 fps frame on this card, and less on a desktop
+where most tiles do not change. What it needs from the stream is that the host downscales
+with swscale's bicubic and no loop filter, which is what it does today; for a host that does
+anything else, notebook 8's blind model is the safe graph and is not published yet.
 
-**The bar is cleared.** It stood as: *beat 23.62 dB inside a frame budget the static filters
-leave almost entirely unspent.* `upscale_web` scores +6.7 dB over the best static method and
-takes 7 ms of a 16.7 ms frame at 60 fps — 5 ms at the tile size the browser sweep argues
-for, and a fraction of that on a desktop stream where most tiles do not change. Two of the
-three numbers that used to make this look impossible were not about the model: one was a
-`Resize` kernel, and the other was a training budget of 96 optimizer steps.
+**What could beat it is a table that runs.** Notebook 11 is training. If its exact-address
+`SDY x2` keeps most of notebook 10's lead on screens, it is a second tier: a little better on
+screens, worse on photos and video, at twice the browser time.
 
-What replaced the old fear is a sharper rule. The `Resize` worry was pointed at the wrong
-runtime — the WebGPU provider runs that operator *well*, and the static bicubic that is
-nothing but a `Resize` is the fastest model on the page — but the op budget was right for a
-different reason than it was written for: **whether a provider implements an operator
-natively is worth more than what the operator costs in theory**, which is why int8 through
-two extra ops is 130× slower than float16 through none. Design to the budget; just expect
-the surprises to be about which provider, not which operator.
+**The post-filter is the one hint worth building**, and the only idea here that is not a
+model: it improves every client at every bitrate for about 1.5% of the bits. It needs a
+client graph, a place in the stream, and the host to run the client's model on its own
+decoded frames every 5th frame.
 
-Read every dB here with the dataset in mind: 12 synthetic frames of drawn windows and text
-is a narrow, repetitive distribution, and the degradation is the exact bicubic downscale the
-preprocessing notebook applied. Inverting a known linear operator on repetitive content is
-the easiest problem in this family, which is why +7 dB is available at all. **None of these
-numbers say anything about real content.** What they do support is the comparison between
-the models, which were all measured the same way, and the runtime numbers, which do not
-depend on the data at all.
+The rule the browser keeps teaching is the one notebook 3 started: **whether a provider runs
+an operator natively is worth more than what the operator costs in theory.** int8 through two
+extra ops was 130× slower than float16; a table interpolated through dozens of small operators
+is 19× slower than a network with more arithmetic; a table whose graph has one integer
+`ReduceSum` in it runs on the CPU. Count operations to design, and measure in the browser to
+decide.
 
 ## Next
 
-- **Publish what notebook 8 found.** Export the blind screens model next to the told one,
-  bake the told one at 0.46 bpp alone (drop the 0.2 and 1.0 graphs), and fold the second
-  seed and the two checks (a wrong path, a fixed bitrate) into the notebook, which does not
-  contain them yet. Then try a model told the path alone, without the bitrate.
-- **More validation frames.** Moved: 2,369 patches from 149 sources put three seeds of
-  the 32-16 0.13 dB wpsnr and 0.0004 SSIM-Y apart, against 0.61 dB on two frames. It is
-  still the constraint on the questions left — every 32-16-sized idea in the strategy sweep
-  is inside it — so a decision between bodies of one size needs more seeds, not more ideas.
-- **Re-point `06_upscale_reparam.ipynb`.** It trains the model the first strategy sweep
-  chose, and the sweep re-run on its own data finds reparameterization worth nothing
-  measurable. The candidates are now two tiers: `luma 24 + 2 blocks` and a 32-16-sized luma
-  body.
+- **Ship notebook 8's graph to desktop-streamer.** Export it as the client's `upscale.onnx`
+  under the mock's contract (float32 NCHW, `N`, `H`, `W` symbolic, one `input`, one
+  `output`), replacing the mock; the client already cuts 328×188 tiles and batches them.
+  Measure it there, in the real page, on the RTX 3090 and on a laptop iGPU - the 3.9 ms is
+  this page's number on this card.
+- **Publish notebook 8's blind model** beside the told one, and drop the 0.2 and 1.0 bpp
+  told graphs (four of its seven files), which can only be worse than the 0.46 one. Fold the
+  second seed and the two checks under "What a told graph needs" into the notebook.
+- **Finish notebook 11**: it is training now. Score its `SDY x2` against notebook 8's model,
+  not notebook 4's, and measure its trained graphs in the browser; if it keeps most of the
+  table's lead on screens, add it to notebook 15 as a client.
+- **Compare against notebook 8's model, not notebook 4's**, in notebooks 11–14: each was
+  written when notebook 4's was the best, and it no longer is.
+- **Look at photos on whole clips**: notebook 8's model is behind notebook 4's there
+  (+0.0164 against +0.0236 SSIM-Y at the same bits), which its patch scores did not show.
+- **Skip the tiles that did not change**, in the client: exact, free, and the largest factor
+  on a desktop stream.
+- **Build the post-filter's client side** as a graph - classes from the LR, 25 filters as a
+  per-pixel lookup - and measure it in the browser, where notebook 15 only estimates 280
+  operations; then a side channel for its 6 kbit every 5th frame, and the host's fit.
 - **Fix the host's Windows hardware lines.** `stream-ffmpeg.js` in desktop-streamer asks
   `scale_d3d11` for `w=`/`h=`; the filter's options are `width`/`height` (checked with the
-  2026-04 gyan.dev build in `C:\Users\henrik\ffmpeg`, which rejects `w` outright). So
-  every scaled share on Windows should fail its NVENC and AMF lines and fall through to
-  libx264, which is why notebook 8 calls swscale's bicubic with no loop filter "what the host
-  sends today". Its tests only compare argument arrays, so they cannot see it. Fixing it
-  changes the downscale filter a Windows client receives to the D3D11 video processor's,
-  whose kernel is not measured yet (`hwupload` frames are refused by `scale_d3d11`; it needs
-  `gfxcapture` or a hardware decode in front of it). It also leaves the path notebook 8's
-  told graph is baked for, and a told graph given the wrong filter is worse than the blind
-  one, so the host has to tell the client which path it runs.
-- **Measure the two tiers in the browser, on a laptop iGPU.** The tier boundary — 54 ms
-  against 25 ms a 1080p frame on an Iris Xe — is a roofline estimate calibrated on an RTX
-  3090; whether the blocks model misses 30 fps there is the page's question.
-- **Re-run `02_upscale_nn.ipynb` at a real training budget, and re-measure it and
-  `01_upscale_dummy.ipynb` through `helpers/metrics.py`.** Its 12 epochs are 96 optimizer steps, and
-  every quality number attributed to it is a number about that; and both notebooks still
-  report RGB PSNR, so neither can be compared with anything measured since.
-- **Real data, which is now the only thing standing between this and a decision.** Screen
-  captures instead of synthetic frames, and a codec round trip in the degradation: a model
-  trained on clean bicubic pairs has never seen blocking or ringing, and a +7 dB that comes
-  from inverting a known blur will not survive contact with one it has not seen.
-- **Skip the tiles that did not change**, in whatever ends up driving inference in desktop-streamer's `src/`.
-  It is the largest remaining factor on desktop content, it is exact rather than
-  approximate, and the model needs no change for it.
-- **Re-export everything at 320×180.** The step is decided — `05_upscale_geometry.ipynb`
-  measured it — and every published graph is still at 128, including the one a client would
-  run. `TILE_STEP` itself stays 128 while it is what the page compares models at.
-- The same runtime tables on a GPU for training and for the desktop client. The browser
-  side is now measured on real hardware; torch and onnxruntime here are still CPU builds.
-- Tiled inference in the client, so a frame larger than memory can be upscaled.
-- Then a model worth the name, with both baselines kept as the numbers to beat.
+  2026-04 gyan.dev build in `C:\Users\henrik\ffmpeg`, which rejects `w` outright). So every
+  scaled share on Windows should fail its NVENC and AMF lines and fall through to libx264,
+  which is why notebook 8 calls swscale's bicubic with no loop filter "what the host sends
+  today". Fixing it changes the downscale filter a Windows client receives to the D3D11 video
+  processor's, which is not measured - and a told graph given the wrong filter is worse than
+  the blind one, so the host has to tell the client which path it runs.
+- **Retire `06_upscale_reparam.ipynb`**: it trains the pick the first strategy sweep made,
+  which the sweep re-run on real data does not support, and its graphs are from the patch set
+  before screens.
+- **Re-measure `01_upscale_dummy.ipynb` and `02_upscale_nn.ipynb` through
+  `helpers/metrics.py`** on the stream-degraded set, or drop their numbers: both still report
+  RGB PSNR on the old synthetic frames, and nothing measured since can be compared with them.
 
 Sibling problems: `../frame_gen_intra/summary.md`, `../frame_gen_extra/summary.md`.
