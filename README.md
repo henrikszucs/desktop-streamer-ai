@@ -12,7 +12,7 @@ nothing else. Beside them, **`datasets/`** holds the data, never committed: the 
 benchmarks every problem can draw on in `datasets/raw/`, downloaded by
 [`datasets/download.py`](datasets/download.py) - and desktop screens, drawn by
 [`datasets/screens.py`](datasets/screens.py) - and beside it one folder per problem for what
-that problem's preprocessing makes of them (`datasets/upscale/`).
+that problem's preprocessing makes of them (`datasets/upscale/`, `datasets/frame_gen_extra/`).
 
 Three problems, one folder each under `src/`, each with its own `summary.md` - and beside
 them `src/mock/`, which is not a problem but the three stand-ins the client runs today (see
@@ -22,7 +22,7 @@ below):
 | --- | --- | --- |
 | [`src/upscale/`](src/upscale/summary.md) | more pixels out than in | fifteen notebooks: static baselines, nine ways to build a model, host hints, and the bits-against-compute trade-off; nothing shipped to the client yet |
 | [`src/frame_gen_intra/`](src/frame_gen_intra/summary.md) | interpolate between two frames | not started |
-| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | extrapolate past the newest frame | not started |
+| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | extrapolate past the newest frame | three notebooks: runs of desktop-like motion, the static baselines, a first browser-shaped network (smoke-tested only) |
 
 ## The mock graphs the client runs
 
@@ -237,11 +237,18 @@ desktop-streamer-ai/
 │   │   ├── <name>/             one folder per dataset, with its train.txt and test.txt
 │   │   ├── screens/            what screens.py draws, train/ and test/, and screens.json
 │   │   └── captures/           screenshots of your own
-│   └── upscale/                00_data_preprocess.ipynb's patch pairs, manifest.json, synthetic/
+│   ├── upscale/                00_data_preprocess.ipynb's patch pairs, manifest.json, synthetic/
+│   └── frame_gen_extra/        its 00_data_preprocess.ipynb's frame runs, manifest.json, synthetic/
 ├── src/                        the source: code, notebooks, and what training leaves behind
 │   ├── mock/                   make_mock_models.py, the three stand-in graphs the client runs
 │   ├── frame_gen_intra/        summary.md only, nothing built yet
-│   ├── frame_gen_extra/        summary.md only, nothing built yet
+│   ├── frame_gen_extra/        the upscale layout, three notebooks in
+│   │   ├── summary.md                the problem, the data, the baselines
+│   │   ├── 00_data_preprocess.ipynb  still screens animated as a desktop in use, streamed, cut into runs
+│   │   ├── 01_extrapolate_dummy.ipynb  repeat, linear and motion-shift extrapolation: the bar to beat
+│   │   ├── 02_extrapolate_twoscale.ipynb  current + a correction made at 1/2 and 1/4 resolution, and its control
+│   │   └── helpers/                  sources, degrade, metrics copied from upscale; scenes.py (the
+│   │                                 desktop motion), runs.py, models.py, training.py, speed.py, webexport.py
 │   └── upscale/
 │       ├── summary.md                the models, the numbers, and what they do not say
 │       ├── 00_data_preprocess.ipynb  frames → LR/HR patch clips, a halo around the LR side
@@ -278,5 +285,6 @@ desktop-streamer-ai/
 │           ├── main.py             the FastAPI server described above
 │           └── www/                the page
 └── dist/                       committed — the finished models, where every export lands
-    └── upscale/                *.onnx, served to the page as models/
+    ├── upscale/                *.onnx, served to the page as models/
+    └── frame_gen_extra/        *.onnx with extrapolate.onnx's two-input contract
 ```
