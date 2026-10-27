@@ -22,7 +22,7 @@ below):
 | --- | --- | --- |
 | [`src/upscale/`](src/upscale/summary.md) | more pixels out than in | fifteen notebooks: static baselines, nine ways to build a model, host hints, and the bits-against-compute trade-off; nothing shipped to the client yet |
 | [`src/frame_gen_intra/`](src/frame_gen_intra/summary.md) | interpolate between two frames | not started |
-| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | extrapolate past the newest frame | three notebooks: runs of desktop-like motion, the static baselines, a first browser-shaped network (smoke-tested only) |
+| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | extrapolate past the newest frame | four notebooks: runs of desktop-like motion, static baselines, two trained networks that hedge, and a tile search built from fixed convolutions (+4.0 dB, 2.3 ms a 1080p frame in Chrome's WebGPU, published); nothing shipped to the client yet |
 
 ## The mock graphs the client runs
 
@@ -171,6 +171,22 @@ Then open <http://127.0.0.1:8000>. Options:
 | --- | --- | --- |
 | `-p`, `--port` | `8000` | |
 | `--host` | `127.0.0.1` | `0.0.0.0` to measure from another machine on the network |
+| `--models` | `dist/upscale/` | another folder of graphs - `dist/frame_gen_extra/` for the extrapolators, whose two inputs (`previous`, `current`) the page fills like the one an upscaler has |
+| `--results` | none | append every measurement the page posts to this file, one JSON line each |
+
+Opened as `/?auto=<id>,<id>,...` (or `?auto=all`), with `backend`, `data`, `mode` and `seconds`
+in the query as the dropdowns would set them, the page measures those models one after
+another with no one at the controls, posts each row - or the error that stopped it - to
+the server, and posts `{"done": true}` last. That is how a headless browser takes a
+measurement. Chrome on Windows, from WSL, against a server on port 8765:
+
+```
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --headless=new --enable-unsafe-webgpu
+    --user-data-dir=%TEMP%\bench-profile "http://localhost:8765/?auto=all&backend=webgpu&data=gpu&mode=reuse"
+```
+
+Each posted row carries the WebGPU adapter it ran on: check that it names the real GPU and not
+a software fallback.
 
 `[standard]` also installs the `fastapi` CLI, so `uv run fastapi run
 src/upscale/benchmark/main.py` works as well — with two differences worth knowing. It binds
@@ -184,7 +200,7 @@ uv run fastapi run src/upscale/benchmark/main.py
 
 The script above avoids both, which is why it is the documented way in.
 
-The server only serves `www/` and `dist/upscale/`. It exists because the page cannot run from `file://` — ONNX
+The server only serves `www/` and `dist/upscale/` (or `--models`). It exists because the page cannot run from `file://` — ONNX
 Runtime Web fetches its own `.wasm` at runtime and that fetch is blocked from a file origin.
 It sets `Cache-Control: no-store` on everything, because a benchmark that re-runs the same
 model would otherwise time the browser cache, and it registers the MIME types for `.wasm`,
@@ -242,11 +258,12 @@ desktop-streamer-ai/
 ├── src/                        the source: code, notebooks, and what training leaves behind
 │   ├── mock/                   make_mock_models.py, the three stand-in graphs the client runs
 │   ├── frame_gen_intra/        summary.md only, nothing built yet
-│   ├── frame_gen_extra/        the upscale layout, three notebooks in
+│   ├── frame_gen_extra/        the upscale layout, four notebooks in
 │   │   ├── summary.md                the problem, the data, the baselines
 │   │   ├── 00_data_preprocess.ipynb  still screens animated as a desktop in use, streamed, cut into runs
 │   │   ├── 01_extrapolate_dummy.ipynb  repeat, linear and motion-shift extrapolation: the bar to beat
 │   │   ├── 02_extrapolate_twoscale.ipynb  current + a correction made at 1/2 and 1/4 resolution, and its control
+│   │   ├── 03_extrapolate_motion.ipynb  motion instead of pixels: a learned head, a tile search, and both
 │   │   └── helpers/                  sources, degrade, metrics copied from upscale; scenes.py (the
 │   │                                 desktop motion), runs.py, models.py, training.py, speed.py, webexport.py
 │   └── upscale/

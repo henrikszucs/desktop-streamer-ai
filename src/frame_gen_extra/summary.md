@@ -4,9 +4,21 @@ Extrapolation: given the frames the stream has delivered so far, generate the ne
 before it arrives, so a client can keep drawing through a stall and a dropped frame does
 not read as a freeze.
 
-> **Status: three notebooks: the data, the baselines, and a first network trained only as
-> far as a 2-epoch smoke test.** Nothing in desktop-streamer's `src/` calls any of it; the
-> client still runs the mock graph.
+> **Status: four notebooks, and one graph ready for the client: notebook 3's tile search,
+> measured in the browser.** Nothing in desktop-streamer's `src/` calls any of it; the client
+> still runs the mock graph.
+>
+> **The best exportable extrapolator is a search, not a network.** Notebook 3 rebuilds
+> notebook 1's tile shift from fixed convolutions: the cost of every offset within ±8 px on
+> half-resolution luma, sampled on every second position and averaged over the tile, and a
+> softmax to pick one motion, applied with `GridSample`. Nothing in it learns. With the
+> client's gate (repeat where nothing moved) it scores **31.20 dB on the changed samples
+> (+3.99 over repeat, 0.8127 SSIM-Y) and 72.6 dB on the unchanged ones**, +1.34 dB over repeat
+> on everything. At the client's halo of 4 it keeps 30.59 dB. **In Chrome's WebGPU on the
+> RTX 3090 it costs 2.3 ms of GPU time a 1080p frame** (36 tiles in one run), every operator
+> on the GPU, `GridSample` included: under notebook 2's network (3.6 ms) and a tenth of the
+> first form of the search (13.9 ms). It is in `dist/frame_gen_extra/`, as one tile a run
+> and as a whole 1080p frame a run.
 >
 > **The mock the client runs is worse than doing nothing.** Its linear extrapolation,
 > `2 · current − previous`, scores **24.74 dB wPSNR against 27.21 dB for repeating the newest
@@ -23,6 +35,15 @@ not read as a freeze.
 > **The client's 4-pixel halo costs a third of that.** Searched as far as the halo lets it,
 > the same method gains +3.24 dB at a halo of 4, +4.79 dB at 8 and +5.06 dB at 16: 41% of
 > the scrolls and pans move more than 4 stream pixels a frame.
+>
+> **No trained network beats it.** Asked for pixels (notebook 2) or for motion (notebook 3),
+> a network trained on two frames hedges, and on a desktop that means blur.
+>
+> **A network asked for pixels learns to blur, not to move.** Notebook 2's two-scale network
+> (5,775 operations a pixel, all in the browser's fast set) trains to **+1.14 dB (0.7628
+> SSIM-Y)** on the changed samples - a quarter of what the untrained shift gets. It hedges:
+> scrolled text and a moving cursor come out faded instead of moved. Its one win is the desktop
+> and cursor samples, where it edges past both repeat and the shift.
 
 **One notebook is one model**, as in `../upscale/`: a notebook owns its method, its numbers
 and its export cell, and publishes into `dist/frame_gen_extra/` at the repo root.
@@ -73,7 +94,15 @@ Run in order, from this folder:
   control of the same cost with no downsampling (`models.Plain`). Trained at a halo of 8,
   scored at 8 and at the client's 4, checkpointed to `checkpoints/extrapolate_twoscale.pt`,
   and exported at the client's tile - into `checkpoints/export/` until `PUBLISH` is set
-  after a real run. So far only a 2-epoch smoke test; see "The two-scale model".
+  once a model is worth shipping. Trained to convergence it gains +1.14 dB on the changed
+  samples, a quarter of notebook 1's shift; see "The two-scale model".
+- `03_extrapolate_motion.ipynb` — **motion, not pixels**: `current` moved by an offset per pixel
+  with `GridSample` (`models.Motion`). The offset comes from a learned head (notebook 2's
+  encoder), from `models.TileSearch` (notebook 1's tile shift built from fixed convolutions,
+  nothing learned), or from both. Also scores every model through `models.Gate`, the client's
+  rule of repeating tiles where nothing moved. Publishes the tile search (stride 2) to
+  `dist/frame_gen_extra/`, one tile a run and a 1080p frame a run; see "Motion", which also
+  has its browser timings.
 
 The code the notebooks share lives in `helpers/`. `sources.py`, `degrade.py` and `metrics.py`
 are copies of upscale's, so a change made for one problem cannot quietly change the other's
@@ -212,22 +241,147 @@ the same scores to 1e-6). It reaches about ±20 px, enough for 95% of the scroll
 pixel and reaches ±6.
 
 Both graphs are `Conv`, `LeakyRelu`, `Concat`, `DepthToSpace` and `Add` only. The two-scale
-graph runs a 328×188 tile in 2.75 ms on the desktop CPU, the control in 8.1 ms. In torch on
+graph runs a 328×188 tile in 1.2–2.8 ms on the desktop CPU, the control in 8.1 ms. In torch on
 the RTX 3090 a 1920×1080 stream frame costs 3.8 ms and 11.8 ms. At the same operation
 count, full resolution is three times slower.
 
-**Trained: only a smoke test.** Two epochs (390 steps of 64, 10 seconds each model) leave
-both at repeat: 0.7313 SSIM-Y and 27.21 dB on the changed samples, where notebook 1's tile
-shift is at 0.8180 and 32.00 dB at this halo. Overfitting one batch shows the recipe learns -
-25.41 → 27.28 dB on its changed samples in 600 steps at 1e-3 (26.44 at 3e-4) - but it is flat
-for the first ~300 steps: with the last convolution at zero, nothing before it gets a
-gradient until that convolution has grown. Two epochs end on that plateau, so the smoke test
-says the notebook runs end to end, and nothing yet about the architecture. On the unchanged
-samples the networks fall from 74.8 to 63 dB: still 0.07% error, invisible, but it is the
-number to watch, since repeat is perfect there.
+Trained at a halo of 8 with `luma_chroma_l1`, Adam from 1e-3, keeping the epoch with the best
+SSIM-Y on the changed samples, until it converged: 124 epochs (5 minutes) for the two-scale
+network, best at epoch 100; 150 epochs (7.6 minutes) for the control, best at 144. Both sit
+flat on repeat for their first ~15 epochs: with the last convolution at zero, nothing before
+it gets a gradient until that convolution has grown.
 
-A real run is raising `MAX_EPOCHS` and running again: the training carries on from its
-checkpoint, at about 5 seconds an epoch.
+| changed samples (1,852), halo 8 | wPSNR | SSIM-Y | vs repeat |
+| --- | --- | --- | --- |
+| repeat | 27.21 | 0.7312 | |
+| **shift, tile** (notebook 1, radius 8) | **32.00** | **0.8180** | **+4.79 dB** |
+| two-scale | 28.35 | 0.7628 | +1.14 dB |
+| control | 28.03 | 0.7546 | +0.83 dB |
+
+| changed, SSIM-Y · wPSNR | page (454) | desktop (167) | photo (292) | video (939) | cursor (118) |
+| --- | --- | --- | --- | --- | --- |
+| repeat | 0.6418 · 23.53 | 0.7817 · 25.81 | 0.5479 · 24.28 | 0.8225 · 30.14 | 0.7148 · 24.20 |
+| shift, tile | **0.7733 · 34.71** | 0.7564 · 25.35 | **0.8220 · 33.37** | **0.8494 · 31.45** | **0.7553** · 25.23 |
+| two-scale | 0.6668 · 24.86 | 0.7804 · 26.29 | 0.6638 · 26.92 | 0.8367 · 30.84 | 0.7331 · **25.42** |
+| control | 0.6798 · 25.31 | **0.7879 · 26.59** | 0.6059 · 25.38 | 0.8310 · 30.44 | 0.7300 · 25.37 |
+
+What it says:
+
+- **The network learned to hedge, not to move.** On a scrolled page it gains 1.3 dB where a
+  translation gains 11.2. Its pictures show why: the lines of a scrolled page fade where
+  they were instead of appearing where they go, and a moving cursor turns into a faint
+  ghost. Under L1, a network unsure where something goes draws a little of it everywhere it
+  might go. Making a pixel of output equal a pixel 12 px away in the input is easy to
+  describe and hard for 3×3 convolutions to learn from a zero start.
+- **The quarter-resolution path earns a little.** +0.32 dB over the control overall, and
+  much more on photos (+1.5 dB), where the motion is largest. The control does better on
+  pages and desktops, where most of the change is near and small. Neither difference is
+  worth an architecture on its own.
+- **The halo is not what holds it back.** The same weights at the client's halo of 4 score
+  28.29 dB against 28.35 at 8: the network never learned motion far enough for the halo to
+  matter.
+- **It damages still tiles, and a gate fixes that for free.** On the unchanged samples the
+  networks fall from repeat's 74.8 dB to 60–61: faint noise everywhere. Running the model
+  only where `previous` and `current` differ (`runs.changed_share` over the tile), and
+  repeating elsewhere, brings the two-scale network back to 70.9 dB on the unchanged samples
+  and leaves its changed score as it was. The gate fires on 1,650 of the 1,852 changed
+  samples and 302 of the 1,374 unchanged ones, and the client would save the model's work on
+  every tile it skips. Measured outside the notebook, with the trained checkpoint.
+
+## Motion
+
+Notebook 3. Notebook 2's network gained 1.3 dB on scrolled pages where a translation gains
+11.2: asked for pixels, it has to *draw* moved content, and it hedges by blurring. So here the
+output is an offset per pixel, and `current` is read there (`models.warp`, a `GridSample` with
+the edge repeated). A correct offset copies the content exactly. Three ways to get the offset,
+all trained and scored at a halo of 8 like notebook 2:
+
+| changed samples (1,852), halo 8 | wPSNR | SSIM-Y | vs repeat | ops a pixel |
+| --- | --- | --- | --- | --- |
+| repeat | 27.21 | 0.7312 | | 0 |
+| exact shift (notebook 1, not exportable) | 32.00 | 0.8180 | +4.79 dB | |
+| two-scale network (notebook 2) | 28.35 | 0.7628 | +1.14 dB | 5,775 |
+| learned motion | 28.02 | 0.7651 | +0.81 dB | 5,342 |
+| tile search, stride 1 | 31.39 | 0.8148 | +4.19 dB | 1,880 |
+| **tile search, stride 2** (published) | **31.20** | **0.8127** | **+3.99 dB** | **479** |
+| search + correction | 31.20 | 0.8127 | +3.99 dB (untrained is best) | 5,821 |
+
+- **Learned motion** - notebook 2's encoder with a head that makes the offset, starting at zero
+  (repeat). It trains for 164 epochs (6.6 minutes, Adam from 1e-4, best epoch kept by wPSNR on
+  the changed samples) to +0.81 dB, under notebook 2's network. It does not find motion. In
+  the prototypes, neither a multi-scale loss nor notebook 1's shift as a teacher for its offsets
+  changed that. Nor did a cost volume handed to it, or an untrained per-pixel soft-argmin over
+  that cost volume (all at most 28.5 dB after 20 epochs, pages at most 25.8). **Per pixel, a desktop's motion is ambiguous:** text lines repeat and white matches white. What makes notebook 1's shift right is
+  adding the matching cost over the whole tile before choosing.
+- **Tile search** (`models.TileSearch`) - that, in a graph. Luma of each frame at half the
+  resolution (a fixed 2×2 stride-2 `Conv`); `previous` moved by each of the 81 offsets within
+  ±4 there (±8 px) - one fixed `Conv` from 1 channel to 81, each kernel a single 1 - and
+  `current` at the kernels' centre, both with no padding, so only positions where every offset
+  reads inside the tile count; `Sub` and `Abs` make |current − previous moved by d|. Then the
+  mean over the tile (`ReduceMean`), a softmax of the 81 costs times a sharpness of 10 (one
+  luma level of difference is a factor e^10), and the weighted mean of the offsets is the
+  tile's motion. Nothing learns. Sharpness 3 lands between offsets and blurs scrolled pages
+  (32.50 dB on them), 30 is close to an argmin (33.48), and 10 is best overall. At stride 1 it
+  is 0.6 dB under the exact search at full resolution, the price of half resolution. Full
+  resolution at a radius of 8 scored 31.94 in the prototypes, for four times the work.
+  `stride` samples the cost on a coarser grid: the mean over a tile needs a few thousand
+  positions, not every one. Stride 2 costs 0.19 dB here and stride 4 0.53. These 80 px samples
+  have 16×16 positions at stride 2; the client's tile has 78×43, so the loss there should be
+  smaller. Stride 2 is published.
+- **Search + correction** - the tile search plus the learned head's correction per pixel,
+  for what one motion a tile cannot follow. It starts as the search, and **no epoch beats
+  that**: the correction drifts from the first epoch (31.09 dB after one, 30.04 at
+  convergence, scrolled pages 33.4 → 28.4 in the prototypes) while desktops and cursors gain
+  a few tenths. The same hedge as notebook 2's, through the warp this time. A fractional
+  offset reads between pixels, and that is a blur. When two frames cannot tell whether a wheel
+  notch is easing in or out, a slightly short and blurred motion is the better bet under L1.
+  `train` keeps the untrained model, so its scores are the search's.
+
+**By kind** (changed samples, SSIM-Y · wPSNR, stride 2): the tile search is 0.7630 · 33.05
+on pages, 0.8137 · 31.83 on photos, 0.8462 · 31.17 on video. Like every motion method, it is at
+or under repeat on desktops (0.7580 · 25.23 against 0.7817 · 25.81). On cursors it is mixed:
+better structure but lower wPSNR (0.7539 · 24.98 against 0.7148 · 24.20).
+
+**The gate** (`models.Gate`) repeats a sample where `previous` and `current` do not differ by
+the run set's own definition of a change. It leaves every changed score as it was: the gate
+lets the model run on 1,650 of the 1,852 changed samples. The other 202 are changes that start
+after the newest frame - a scroll beginning, a menu opening - which no model could predict.
+It lifts the unchanged ones: the tile search from 69.56 to 72.56 dB (stride 2), notebook 2's
+network from 60.33 to 70.93. Over every sample the gated tile search is +1.34 dB over repeat,
+the only exportable model here that beats repeat on all samples together.
+
+**At the client's halo of 4**, the same search reaches past the halo and reads the edge
+repeated there, and still scores 30.59 dB (0.8109, stride 2; 30.77 at stride 1), above the
+exact shift limited to ±4 (30.45). Searching only ±4 px scores 30.06.
+
+**Speed, in the browser.** `../upscale/benchmark/main.py --models <folder>` serves any folder
+of graphs, and the page now fills every input a graph has, so it runs two-input models. Opened
+as `?auto=<ids>`, it measures them with no one at the controls and posts each row to the
+server. That is how these were taken: headless Chrome 156 on Windows, WebGPU, the RTX 3090
+(the adapter reports NVIDIA Ampere, not a software fallback), GPU-resident tensors, the output
+buffer reused, GPU time from timestamp queries. One 1080p stream frame is 36 tiles in one run:
+
+| graph, one 1080p frame | GPU ms | wall ms |
+| --- | --- | --- |
+| linear (the mock) | 0.25 | 0.27 |
+| two-scale network (notebook 2) | 3.6 | 3.7 |
+| tile search, first form (a 162-channel 9×9 `Conv`, two taps of 81 used) | 13.9 | 15.0 |
+| tile search + correction, first form | 16.8 | 18.2 |
+| tile search, stride 1 | 5.7 | 5.9 |
+| **tile search, stride 2** (published) | **2.2–2.3** | **2.3–2.4** |
+| tile search, stride 4 | 1.4 | 1.4 |
+
+Every operator runs on the GPU, `GridSample` included: GPU time and wall clock agree. One
+tile a run costs 0.18 ms of GPU but 0.29 ms of wall clock, so 36 separate runs are 10.5 ms a
+frame: the client should run a frame's tiles as one batch, as it already does. Graph capture
+changes nothing at batch 36. The first form spent its time on a dense convolution whose kernels
+used 2 taps of 81. Moving `previous` with a 1-to-81 `Conv` and subtracting is the same
+arithmetic for a quarter of the work, and stride 2 quarters it again. The graph is 34 KB, and
+on the desktop CPU it takes 1.5 ms a tile.
+
+**What it is not measured on.** It finds one motion for the whole tile. The samples are 80 px;
+the client's tile is 328×188, which can hold a scrolled page beside a still panel, and then one
+motion is wrong for part of it. Whole frames are the measurement that settles it.
 
 ## Open questions
 
@@ -247,11 +401,21 @@ checkpoint, at about 5 seconds an epoch.
 
 ## Next
 
-A real run of notebook 2's two models, to convergence, then score them against the tile
-shift by kind of source. If the two-scale network beats the control, the quarter-resolution
-path earns its place. If neither gets near the shift, the network cannot find the motion
-from a zero start in reasonable time. Then the thing to try is a fixed bank of shifted copies
-of `current` - a depthwise `Conv` with one-hot kernels, which is inside the operator set -
-for the network to choose between.
+1. **Put it in the client.** Copy `extrapolate_tilesearch_r4_s2_tile320x180_b36.onnx` (a 1080p
+   frame of tiles in one run) or the one-tile graph over the mock's `extrapolate.onnx`, and add
+   the gate: compare `previous` and `current` per tile and repeat the tiles where nothing moved
+   without running the model. Then measure it where it matters, on a laptop iGPU. The 3090
+   numbers are a floor, and an Intel UHD has about a fortieth of the compute.
+2. **Score on whole frames.** The 80 px samples cannot show what one motion per 328×188 tile
+   does to a frame that holds two motions, or what stride 2 costs on a tile of that size. A
+   few hundred whole streamed clips, cut into the client's tiles, and scored by the same groups.
+3. **Settle the cursor question before modelling desktops.** Every method is at or under
+   repeat on desktops and cursors. If desktop-streamer draws the pointer in the client, the
+   cursor needs no model, and what is left on a desktop is drags, menus and region scrolls.
+4. **A third frame, if the network is to come back.** Both learned models hedge because two
+   frames cannot tell a scroll that is easing in from one that is easing out. The runs hold up
+   to 7 frames of context; the client's contract would need a third input. The test is the
+   search + correction model with three frames: if its correction still drifts off the search,
+   the problem is the loss, not the context.
 
 Sibling problems: `../upscale/summary.md`, `../frame_gen_intra/summary.md`.

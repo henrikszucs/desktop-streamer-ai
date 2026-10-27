@@ -491,26 +491,26 @@ const selectRunnable = async function(backend) {
 
 // The input, filled once. Both paths write the same random tile; the difference is
 // whether it is a JS array handed over every run, or a buffer already in GPU memory.
+// Every input the graph declares gets a tile of its own, of the first input's shape: an
+// upscaler has one, an extrapolator two (`previous` and `current`).
 const prepareInput = function(session, entry, location) {
     const dims = entry["input"];
     const dtype = entry["dtype"] || "float32";
     // Every dimension, batch included: the tensor is built with the whole shape, so a
     // tile counted from three of the four is a length the constructor rejects.
-    const data = makeTile(dtype, dims.reduce((total, value) => total * value, 1));
+    const count = dims.reduce((total, value) => total * value, 1);
 
     const feeds = {};
-    if (location !== "gpu") {
-        feeds[session.inputNames[0]] = new ort.Tensor(dtype, data, dims);
-        return { feeds: feeds };
-    }
-
-    const device = ort.env.webgpu.device;
-    const buffer = gpuBuffer(device, data.byteLength);
-    device.queue.writeBuffer(buffer, 0, data);
-
-    feeds[session.inputNames[0]] = ort.Tensor.fromGpuBuffer(buffer, {
-        dataType: dtype,
-        dims: dims,
+    session.inputNames.forEach((name) => {
+        const data = makeTile(dtype, count);
+        if (location !== "gpu") {
+            feeds[name] = new ort.Tensor(dtype, data, dims);
+            return;
+        }
+        const device = ort.env.webgpu.device;
+        const buffer = gpuBuffer(device, data.byteLength);
+        device.queue.writeBuffer(buffer, 0, data);
+        feeds[name] = ort.Tensor.fromGpuBuffer(buffer, { dataType: dtype, dims: dims });
     });
     return { feeds: feeds };
 };
@@ -819,6 +819,18 @@ const addRow = function(entry, result) {
     elements.results.hidden = false;
 };
 
+// One measurement, with the settings the controls hold: what the button runs, and what the
+// automatic mode runs once per model.
+const measure = async function(entry) {
+    const choice = elements.backend.value;
+    const seconds = Math.max(1, Number(elements.seconds.value) || 3);
+    const plan = await resolveRun(entry, choice, elements.data.value, elements.mode.value);
+    const result = await benchmark(entry, plan.provider, plan.location, plan.mode, seconds);
+    runnable.add(refusalKey(entry, choice));
+    addRow(entry, result);
+    return { plan: plan, result: result };
+};
+
 const run = async function() {
     const entry = findModel(elements.model.value);
     if (!entry) {
@@ -826,7 +838,6 @@ const run = async function() {
     }
 
     const choice = elements.backend.value;
-    const seconds = Math.max(1, Number(elements.seconds.value) || 3);
 
     elements.run.disabled = true;
     setStatus(`running ${entry["label"]} on ${choice}…`, "busy");
@@ -834,12 +845,7 @@ const run = async function() {
     try {
         // Yield first, so the button repaints as disabled before the thread is taken.
         await new Promise((resolve) => setTimeout(resolve, 0));
-        const plan = await resolveRun(entry, choice, elements.data.value,
-            elements.mode.value);
-        const result = await benchmark(entry, plan.provider, plan.location, plan.mode,
-            seconds);
-        runnable.add(refusalKey(entry, choice));
-        addRow(entry, result);
+        const { plan, result } = await measure(entry);
         setStatus(`${entry["label"]}: ${result["nsPerPixel"].toFixed(2)} ns per output `
             + `pixel, ${result["median"].toFixed(3)} ms per run `
             + `(${result["runs"]} runs in batches of ${result["chunk"]}, `
@@ -894,8 +900,8 @@ const load = async function() {
     });
 
     if (catalogue["models"].length === 0) {
-        setStatus("no models in dist/upscale/ - run the export cell of a model notebook, "
-            + "then reload", "error");
+        setStatus("no models in the folder the server was started with - run the export "
+            + "cell of a model notebook, then reload", "error");
         return;
     }
 
@@ -905,10 +911,67 @@ const load = async function() {
         + `${catalogue["generated"]}`
         + (navigator.gpu ? " · WebGPU available" : " · no WebGPU in this browser"));
 
+    const query = new URLSearchParams(location.search);
+    if (query.has("auto")) {
+        await automatic(query);
+        return;
+    }
+
     // The list is ordered cheapest-first and the cheapest models are single resampling
     // nodes, which is exactly what a backend is most likely to lack - so the opening
     // selection is settled by asking the chosen backend, not by taking the first row.
     await backendChanged();
+};
+
+// The page with no one at the controls: `?auto=<id>,<id>...` (or `all`) measures those
+// models in turn with the settings in the query, and posts every row - or the error that
+// stopped it - to the server, which writes them down. Then one last post says it is done,
+// so whatever opened the page knows when to close it. A refusal is a result like any other.
+const automatic = async function(query) {
+    ["backend", "data", "mode", "seconds"].forEach((name) => {
+        if (query.has(name)) {
+            elements[name].value = query.get(name);
+        }
+    });
+    const wanted = query.get("auto");
+    const ids = wanted === "all" ? catalogue["models"].map((entry) => entry["id"])
+        : wanted.split(",").filter((id) => id);
+    const post = (record) => fetch("api/results", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(record),
+    });
+
+    let adapter = null;
+    if (navigator.gpu) {
+        const found = await navigator.gpu.requestAdapter();
+        if (found && found.info) {
+            const info = found.info;
+            adapter = { vendor: info.vendor, architecture: info.architecture,
+                device: info.device, description: info.description };
+        }
+    }
+    const settings = { backend: elements.backend.value, data: elements.data.value,
+        mode: elements.mode.value, seconds: Number(elements.seconds.value),
+        adapter: adapter, userAgent: navigator.userAgent };
+
+    for (const id of ids) {
+        const entry = findModel(id);
+        if (!entry) {
+            await post({ ...settings, model: id, error: "no such model" });
+            continue;
+        }
+        setStatus(`auto: running ${entry["label"]}…`, "busy");
+        try {
+            const { plan, result } = await measure(entry);
+            await post({ ...settings, model: id, label: entry["label"], file: entry["file"],
+                input: entry["input"], plan: plan, result: result });
+        } catch (error) {
+            console.error(error);
+            await post({ ...settings, model: id, label: entry["label"], error: error.message });
+        }
+    }
+    setStatus(`auto: done, ${ids.length} model(s)`, "ok");
+    await post({ ...settings, done: true });
 };
 
 // One place the selection is settled from, so a backend change and the opening load agree.

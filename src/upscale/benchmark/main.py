@@ -1,6 +1,17 @@
 """Server for the upscaling speed benchmark page.
 
     uv run src/upscale/benchmark/main.py    # then open http://127.0.0.1:8000
+    uv run src/upscale/benchmark/main.py --models dist/frame_gen_extra   # the extrapolators
+
+`--models` serves another folder of graphs in place of dist/upscale/. A graph with more than
+one input - the extrapolators' `previous` and `current` - is fed a tile on every input, all
+of the shape of the first.
+
+`--results FILE` adds a line of JSON to FILE for every measurement the page posts. The page
+posts when it is opened as `?auto=<model id>,<model id>...` (or `?auto=all`): it measures
+those models one after another with no one at the controls - `backend`, `data`, `mode` and
+`seconds` in the query pick the same settings the dropdowns do - and posts a last line with
+`"done": true`. That is how a headless browser takes a measurement.
 
 Needs fastapi[standard], which is what brings uvicorn along. It serves ./www, and it
 answers GET /api/models with the list of models the page fills its dropdown from. It
@@ -19,6 +30,7 @@ those ride in the model's own `metadata_props`, so a model is still one file. Dr
 
 # internal
 import argparse
+import json
 import mimetypes
 import re
 import sys
@@ -28,7 +40,7 @@ from pathlib import Path
 # third-party
 import onnx
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -38,8 +50,10 @@ from helpers import webexport
 
 WWW = Path(__file__).parent / "www"
 # The page fetches models/<file>, served out of dist/ rather than out of www/, so the
-# finished models sit apart from the source that measures them.
+# finished models sit apart from the source that measures them. `--models` changes it.
 MODELS = webexport.MODELS_DIR
+# Where posted measurements go, one JSON line each; None prints them only. `--results`.
+RESULTS = None
 
 # mimetypes reads the Windows registry, where .js has been known to come back as
 # text/plain and .wasm as nothing at all. Either one breaks the page, so the types that
@@ -175,7 +189,7 @@ def read_model(path):
 
 
 def list_models():
-    """Every model in dist/upscale/, cheapest baseline first."""
+    """Every model in the models folder (dist/upscale/ unless `--models`), cheapest first."""
     models = []
     for path in sorted(MODELS.glob("*.onnx")):
         stat = path.stat()
@@ -216,6 +230,19 @@ def models_endpoint():
     })
 
 
+@app.post("/api/results")
+async def results_endpoint(request: Request):
+    """One measurement from the page's automatic mode, appended to `--results`."""
+    record = await request.json()
+    record["received"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    line = json.dumps(record)
+    print(line, flush=True)
+    if RESULTS is not None:
+        with open(RESULTS, "a", encoding="utf-8") as file:
+            file.write(line + "\n")
+    return {"ok": True}
+
+
 @app.middleware("http")
 async def no_store(request, call_next):
     """A benchmark re-runs the same model many times, and a cached 200 would time the
@@ -231,17 +258,38 @@ async def no_store(request, call_next):
     return response
 
 
+class ModelFiles(StaticFiles):
+    """models/, served out of whichever folder `MODELS` names when the request arrives, so
+    `--models` can choose it after the app is built - and `fastapi run`, which never calls
+    main(), still gets the default."""
+
+    @property
+    def all_directories(self):
+        return [MODELS]
+
+    @all_directories.setter
+    def all_directories(self, value):
+        pass
+
+
 # Mounted last: a mount at "/" matches everything, so every route above has to be
 # declared before it to be reachable at all.
-app.mount("/models", StaticFiles(directory=MODELS, check_dir=False), name="models")
+app.mount("/models", ModelFiles(directory=MODELS, check_dir=False), name="models")
 app.mount("/", StaticFiles(directory=WWW, html=True), name="www")
 
 
 def main():
+    global MODELS, RESULTS
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("-p", "--port", type=int, default=8000)
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--models", type=Path, default=MODELS,
+                        help="the folder of .onnx graphs to serve (default: dist/upscale/)")
+    parser.add_argument("--results", type=Path, default=None,
+                        help="append every measurement the page posts to this file, as JSON lines")
     arguments = parser.parse_args()
+    MODELS = arguments.models.resolve()
+    RESULTS = arguments.results
 
     found = list_models()
     if found:

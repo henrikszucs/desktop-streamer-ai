@@ -72,7 +72,7 @@ def to_tensor(frames):
 def predict(model, inputs, batch_size=256):
     """A model's frames for uint8 inputs (N, context, h, w, 3), as a float (N, 3, h, w) tensor
     on the CPU."""
-    model.eval()
+    model.to(DEVICE).eval()
     out = []
     for first in range(0, len(inputs), batch_size):
         batch = to_tensor(inputs[first:first + batch_size])
