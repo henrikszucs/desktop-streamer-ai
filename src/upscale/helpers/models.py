@@ -210,17 +210,25 @@ class ReparamUpscaler(Upscaler):
 LUMA_709 = (0.2126, 0.7152, 0.0722)
 
 
+def activation(slope=0.0):
+    """ReLU, or with a `slope` a leaky ReLU: a negative value passes at `slope` times its size,
+    so a channel that is negative everywhere still learns instead of switching off for good
+    (notebook 16). Both are inside the WebGPU op budget (`Relu`, `LeakyRelu`)."""
+    return nn.LeakyReLU(slope, inplace=True) if slope else nn.ReLU(inplace=True)
+
+
 class ResidualBlock(nn.Module):
     """x + 1x1(ReLU(3x3(x))). The 3x3 reaches one pixel further, the 1x1 none, so a block
     costs one pixel of halo; the block's input added back keeps a deep body easy to train."""
 
-    def __init__(self, width):
+    def __init__(self, width, slope=0.0):
         super().__init__()
         self.conv = nn.Conv2d(width, width, 3, padding=1)
         self.point = nn.Conv2d(width, width, 1)
+        self.act = activation(slope)
 
     def forward(self, x):
-        return x + self.point(torch.relu(self.conv(x)))
+        return x + self.point(self.act(self.conv(x)))
 
 
 class LumaUpscaler(Upscaler):
@@ -233,12 +241,14 @@ class LumaUpscaler(Upscaler):
 
     The body: `widths` plain convolutions (the first `stem` x `stem`, then 3x3s), then
     `blocks` `ResidualBlock`s at the last width, then a 3x3 tail that starts at zero.
-    `luma_in=True` feeds the body Y alone (a frozen 1x1 convolution) instead of RGB.
+    `luma_in=True` feeds the body Y alone (a frozen 1x1 convolution) instead of RGB. A
+    `slope` makes every ReLU leaky (see `activation`).
     """
 
-    def __init__(self, widths=(24,), blocks=2, stem=3, skip=5, scale=2, luma_in=False):
+    def __init__(self, widths=(24,), blocks=2, stem=3, skip=5, scale=2, luma_in=False, slope=0.0):
         super().__init__(scale, skip)
         self.widths, self.blocks, self.stem, self.luma_in = tuple(widths), blocks, stem, luma_in
+        self.slope = slope
         channels = 3
         layers = []
         if luma_in:
@@ -250,9 +260,9 @@ class LumaUpscaler(Upscaler):
             channels = 1
         for index, width in enumerate(widths):
             kernel = stem if index == 0 else 3
-            layers += [nn.Conv2d(channels, width, kernel, padding=kernel // 2), nn.ReLU(inplace=True)]
+            layers += [nn.Conv2d(channels, width, kernel, padding=kernel // 2), activation(slope)]
             channels = width
-        layers += [ResidualBlock(channels) for _ in range(blocks)]
+        layers += [ResidualBlock(channels, slope) for _ in range(blocks)]
         self.body = nn.Sequential(*layers)
         self.tail = zero_start(nn.Conv2d(channels, scale * scale, 3, padding=1))
         # the 3x3s after the stem, one per block, and the tail
@@ -261,6 +271,50 @@ class LumaUpscaler(Upscaler):
     def residual(self, x):
         luma = self.tail(self.body(x))
         return torch.cat([luma, luma, luma], dim=1)   # channel c * scale² + phase, for every colour c
+
+
+class ToldLuma(Upscaler):
+    """`LumaUpscaler` given a condition (N, K, 1, 1) as a second input, which shifts each
+    channel after the stem and inside each residual block (notebook 8). For one stream the
+    condition is a constant, so `baked(condition)` folds it into the biases and returns a
+    plain `LumaUpscaler`: the graph that ships."""
+
+    def __init__(self, conditions, width=24, blocks=2, stem=3, skip=5, scale=2, slope=0.0):
+        super().__init__(scale, skip)
+        self.width, self.blocks, self.stem, self.slope = width, blocks, stem, slope
+        # the same layers as LumaUpscaler((width,), blocks, stem), in the same order, so the
+        # same seed starts both alike and `baked` can copy them across
+        self.body = nn.Sequential(nn.Conv2d(3, width, stem, padding=stem // 2), activation(slope),
+                                  *[ResidualBlock(width, slope) for _ in range(blocks)])
+        self.tail = zero_start(nn.Conv2d(width, scale * scale, 3, padding=1))
+        self.halo = self.halo_for(stem, blocks + 1)
+        self.shifts = nn.ModuleList([nn.Conv2d(conditions, width, 1, bias=False) for _ in range(blocks + 1)])
+        for shift in self.shifts:
+            nn.init.zeros_(shift.weight)   # untrained, the condition changes nothing
+
+    def residual(self, x, condition):
+        h = self.body[1](self.body[0](x) + self.shifts[0](condition))
+        for block, shift in zip(self.body[2:], self.shifts[1:]):
+            h = h + block.point(block.act(block.conv(h) + shift(condition)))
+        luma = self.tail(h)
+        return torch.cat([luma, luma, luma], dim=1)
+
+    def forward(self, x, condition):
+        return self.shuffle(self.skip(x) + self.residual(x, condition))
+
+    @torch.no_grad()
+    def baked(self, condition):
+        """The same model for one condition, as a plain LumaUpscaler: each shift folded into
+        the bias of the convolution it follows."""
+        device = next(self.parameters()).device
+        plain = LumaUpscaler((self.width,), self.blocks, self.stem, self.skip_size, self.scale,
+                             slope=self.slope).to(device)
+        plain.load_state_dict({k: v for k, v in self.state_dict().items() if not k.startswith("shifts.")})
+        c = torch.as_tensor(condition, dtype=torch.float32, device=device).reshape(1, -1, 1, 1)
+        convs = [plain.body[0], *[block.conv for block in plain.body[2:]]]
+        for conv, shift in zip(convs, self.shifts):
+            conv.bias += shift(c).flatten()
+        return plain.eval()
 
 
 def count_parameters(model, learned_only=False):

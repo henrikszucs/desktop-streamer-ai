@@ -121,17 +121,25 @@ def copy_weights(model):
     return {name: value.detach().cpu().clone() for name, value in model.state_dict().items()}
 
 
-def train_one_epoch(model, loader, trim, loss_fn, optimiser, show_progress=False):
+def train_one_epoch(model, loader, trim, loss_fn, optimiser, show_progress=False, teacher=None):
     """One pass over every training patch. Returns the average loss.
 
-    With `show_progress`, a Keras-style progress bar is redrawn in place while it runs.
+    With `show_progress`, a Keras-style progress bar is redrawn in place while it runs. With a
+    `teacher` (a model that is not trained), the loss is `loss_fn(prediction, target, taught)`,
+    where `taught` is the teacher's picture of the same batch.
     """
     model.train()
     total_loss, seen = 0.0, 0
     started = shown = time.time()
     for step, (lr_batch, hr_batch) in enumerate(loader, start=1):
         lr_batch, hr_batch = to_device(lr_batch), hr_batch.to(DEVICE)
-        loss = loss_fn(trim(forward(model, lr_batch)), hr_batch)
+        prediction = trim(forward(model, lr_batch))
+        if teacher is None:
+            loss = loss_fn(prediction, hr_batch)
+        else:
+            with torch.no_grad():
+                taught = trim(forward(teacher, lr_batch))
+            loss = loss_fn(prediction, hr_batch, taught)
         optimiser.zero_grad(set_to_none=True)
         loss.backward()
         optimiser.step()
@@ -192,7 +200,7 @@ MIN_IMPROVEMENT = {"ssim": 1e-5}
 
 def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1e-3,
           loss_fn=F.l1_loss, select="wpsnr", patience=6, min_learning_rate=None,
-          min_improvement=None, checkpoint=None, verbose=1):
+          min_improvement=None, checkpoint=None, verbose=1, teacher=None):
     """Train `model` with Adam until it stops getting better, scoring it after every epoch.
 
     How long it trains is not fixed: it follows the `select` score on the validation split.
@@ -210,6 +218,8 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
     - **Checkpoint**: with a `checkpoint` path, the whole training is saved there after
       every epoch. Run the same call again and it carries on where it stopped, or, if it had
       finished, just loads the result. Delete the file to train from the start.
+    - **Teacher**: with a `teacher`, `loss_fn` is also given the teacher's picture of every
+      training batch (see `train_one_epoch`); validation still scores against the truth.
 
     The printout is like Keras: `verbose=1` shows a progress bar while an epoch trains, then
     its time, loss, every validation score and the learning rate, and what the epoch meant
@@ -260,7 +270,8 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
 
         epoch_started = time.time()
         rate = optimiser.param_groups[0]["lr"]
-        loss = train_one_epoch(model, train_loader, trim, loss_fn, optimiser, show_progress=verbose == 1)
+        loss = train_one_epoch(model, train_loader, trim, loss_fn, optimiser, show_progress=verbose == 1,
+                               teacher=teacher)
         scores = evaluate(model, val_loader, trim)
         seconds = time.time() - epoch_started
         scores["loss"] = loss

@@ -3,7 +3,7 @@
 Reconstructing a higher resolution frame from the one the stream delivered, so a client can
 be sent fewer pixels than it displays.
 
-> **Status: fifteen notebooks, and one model ready to ship: notebook 8's.** Nothing in
+> **Status: sixteen notebooks, and one model ready to ship: notebook 8's.** Nothing in
 > desktop-streamer's `src/` calls any of it yet; the client still runs the mock graphs.
 >
 > **The best model overall is notebook 8's**: residual blocks correcting luma only (28,120
@@ -29,6 +29,13 @@ be sent fewer pixels than it displays.
 > output every 5th frame (13, 14) costs 1.1–1.6% of the video's bits and beats spending
 > those bits on H.264 at every bitrate and kind - but it has no client graph and no side
 > channel yet.
+>
+> **The cheap tier is a luma 32-16 on a leaky ReLU** (16): 0.9312 SSIM-Y in **2.8 ms a 1080p
+> frame**, above notebook 4's model and DirNet D for less time, and +0.0402 SSIM-Y on screens
+> at the same bits on whole clips, against notebook 8's +0.0436. On a ReLU the same body is a
+> seed lottery (0.0035 apart): its narrow layer's channels die. Distilling it from notebook
+> 8's model buys +0.08 dB luma and no SSIM-Y; an edge-weighted loss moves notebook 8's error
+> from video to screens and does not shrink it.
 >
 > **Operations per pixel do not predict browser time**, which is why every graph from
 > notebook 4 on is now measured in the browser ("Results at the client's tile"): what a
@@ -188,10 +195,17 @@ Run in order, from this folder:
   published client, with and without the hint, how many bits plain H.264 and bicubic would
   need for the same SSIM-Y, over the bits the client's stream used: its worth in
   bandwidth. See "Bits against compute".
+- `16_upscale_distill.ipynb` — **better training for bodies already here.** Distillation
+  (half the loss against notebook 8's model's picture) for the luma 32-16, an edge-weighted
+  L1 for notebook 8's told model, and a leaky ReLU on both, each to convergence at two seeds
+  where it mattered. The leaky ReLU is what pays, and only on the 32-16: it ends the 32-16's
+  seed lottery, and the notebook publishes it as the cheap tier. See "Distillation, edges and
+  a leaky ReLU".
 
 The notebooks share their code through `helpers/`, so each one reads as a short list of
 steps: `models.py` holds the bicubic skip and the models built on it (`PlainUpscaler`,
-`ReparamUpscaler`), `training.py` the loaders, the training loop, scoring and checkpoints,
+`ReparamUpscaler`, `LumaUpscaler`, `ToldLuma`; `slope` makes any of the last two leaky),
+`training.py` the loaders, the training loop (`teacher=` to distil), scoring and checkpoints,
 and `speed.py` the timing.
 
 `helpers/metrics.py` is **how a frame is scored** — Y'CbCr, luma weighted 6:1:1, the
@@ -203,7 +217,7 @@ with the `psnr-rgb` column, not with `wpsnr`.
 Each model notebook owns its own export cell and writes its `.onnx` into `dist/upscale/`
 at the repo root through `helpers/webexport.py`. That is all publishing is: the benchmark server
 lists whatever graphs are in that folder, per request, so there is no manifest for a
-re-export to leave stale. 61 graphs are on the page today: notebooks 1–3's eight (seven at
+re-export to leave stale. 64 graphs are on the page today: notebooks 1–3's eight (seven at
 the old 128 step, one at 256), and every model from notebook 4 on at the 320×180 step, most at float32, float16
 and float16 as a whole 1080p frame.
 
@@ -699,6 +713,9 @@ narrower is *luck*. Milliseconds are the roofline estimate for a 1080p frame in 
 - **Dying ReLUs are real, and cost nothing measurable.** At 1e-3 the control switches off
   6 of its 16 narrow channels in its first 60 steps. A leaky ReLU (slope 0.1, `LeakyRelu`,
   inside the budget) keeps them, and lands +0.0003 SSIM-Y and +0.11 dB wpsnr: both luck.
+  That was on this set, before screens. On notebook 8's set it is not free: notebook 16
+  finds the luma 32-16's narrow layer losing 2 to 10 of its 16 channels by seed, which is
+  its whole 0.0035 seed spread, and a leaky ReLU worth +0.0023 SSIM-Y over the ReLU pair.
 - **The ruler is almost five times narrower than the first sweep's** — 0.13 dB wpsnr
   against 0.61, from 2,369 validation patches of 149 sources instead of 76 patches of two
   frames — and the differences between bodies of one size are still inside it.
@@ -708,7 +725,8 @@ Notebook 7's `luma 24 + 2 blocks` where the device has the bandwidth (10 ms a 10
 on an RTX 3060, 29 ms on a GTX 1650), and a 32-16-sized luma body where it does not (25 ms
 on an Iris Xe or an M1, where the blocks take 54). Within the cheap tier the choice does
 not move quality, so it should be made on what the browser measures, and on colour, which
-the luma frame keeps at bicubic for nothing.
+the luma frame keeps at bicubic for nothing. (On the screens set it does move it: notebook
+16's leaky luma 32-16 is now the cheap tier.)
 
 So the notebook now trains only those two tiers and the control: `luma 24 + 2 blocks`,
 `luma 32-16` and `32-16` at three seeds, five runs (about 45 minutes) instead of eleven. The
@@ -1075,15 +1093,17 @@ in the browser (from "Results at the client's tile"):
 
 | client | 1080p, browser | screens: worth, same bits | photos | video |
 |---|---|---|---|---|
-| bicubic + hint | 0 + the hint ‡ | ×1.28, +0.0112 | ×1.26, +0.0120 | ×1.64, +0.0089 |
-| DirNet B | 0.8 ms | ×1.08, +0.0043 | ×1.07, +0.0027 | ×0.83, −0.0022 |
-| DirNet C | 7.1 ms | ×1.53, +0.0357 | ×1.16, +0.0127 | ×1.29, +0.0086 |
-| DirNet D | 7.7 ms | ×1.70, +0.0366 | ×1.20, +0.0147 | ×1.52, +0.0108 |
-| notebook 4 | 3.9 ms | ×1.45, +0.0291 | **×1.44, +0.0236** | ×1.47, +0.0128 |
-| **notebook 8** (told the host's path) | **3.9 ms** | **×2.14, +0.0434** | ×1.23, +0.0164 | **×1.59, +0.0150** |
-| **notebook 8 + hint** | 3.9 ms + the hint ‡ | **×2.69, +0.0461** | ×1.29, +0.0189 | ×1.76, +0.0168 |
-| `SDY x2` table | 75 ms | ×2.52, +0.0477 | ×1.21, +0.0154 | ×1.48, +0.0111 |
-| `SDY x2` table + hint | 75 ms + the hint ‡ | ×3.18, +0.0492 | ×1.32, +0.0197 | ×1.92, +0.0156 |
+| bicubic + hint | 0 + the hint ‡ | ×1.27, +0.0113 | ×1.25, +0.0120 | ×1.61, +0.0089 |
+| DirNet B | 0.8 ms | ×1.06, +0.0043 | ×1.07, +0.0027 | ×0.89, −0.0022 |
+| DirNet C | 7.1 ms | ×1.51, +0.0359 | ×1.16, +0.0127 | ×1.28, +0.0086 |
+| DirNet D | 7.7 ms | ×1.68, +0.0367 | ×1.20, +0.0147 | ×1.52, +0.0108 |
+| **luma 32-16 leaky** (16) | **2.8 ms** | ×1.81, +0.0402 | ×1.21, +0.0157 | ×1.51, +0.0110 |
+| luma 32-16 leaky + hint | 2.8 ms + the hint ‡ | ×2.41, +0.0434 | ×1.29, +0.0196 | ×1.69, +0.0159 |
+| notebook 4 | 3.9 ms | ×1.43, +0.0292 | **×1.43, +0.0237** | ×1.47, +0.0129 |
+| **notebook 8** (told the host's path) | **3.9 ms** | **×2.13, +0.0436** | ×1.22, +0.0163 | **×1.60, +0.0151** |
+| **notebook 8 + hint** | 3.9 ms + the hint ‡ | **×2.72, +0.0463** | ×1.29, +0.0189 | ×1.73, +0.0168 |
+| `SDY x2` table | 75 ms | ×2.56, +0.0479 | ×1.21, +0.0154 | ×1.48, +0.0111 |
+| `SDY x2` table + hint | 75 ms + the hint ‡ | ×3.23, +0.0494 | ×1.30, +0.0197 | ×1.88, +0.0156 |
 
 Worth is the geometric mean over the clips some bitrate reaches; on screens 7 of the 8 clips
 are reached by **no** bitrate at all - H.264 codes a still screen at the same size whatever
@@ -1091,26 +1111,86 @@ it is given, so no bandwidth buys what a model adds there, and the same-bits col
 to read. ‡ the hint has no graph; notebook 15 works its client side out at about 280
 operations an LR pixel and 1.7% of the video's bits.
 
-- **Notebook 8's model is the client to ship.** At the cost of notebook 4's it adds +0.0434
-  SSIM-Y on screens at the same bits, where notebook 4's adds +0.0291, and it is the best
+- **Notebook 8's model is the client to ship.** At the cost of notebook 4's it adds +0.0436
+  SSIM-Y on screens at the same bits, where notebook 4's adds +0.0292, and it is the best
   unhinted client on video. Only the 75 ms table beats it on screens, by 0.0043.
-- **It gives up photos.** On whole photo clips it is behind notebook 4's model (+0.0164
-  against +0.0236), which the patch scores did not show (there it was ahead, +0.024 against
-  +0.022). The clips are 8 sources a kind, so this is a direction to check rather than a
-  measurement; for a desktop stream, screens and video are what matter.
+- **The leaky luma 32-16 is the cheap tier.** In 70% of notebook 8's browser time it keeps
+  all but 0.0034 of its lead on screens (+0.0402) and 0.0041 on video. It is ahead of
+  notebook 4's model on screens (behind on photos and video) and level with or ahead of
+  DirNet D everywhere, for less time than either. With the
+  hint it adds +0.0434 on screens: notebook 8's model without one.
+- **It gives up photos, and so does everything trained with screens.** On whole photo clips
+  notebook 8's model is behind notebook 4's (+0.0163 against +0.0237), which the patch scores
+  did not show (there it was ahead, +0.024 against +0.022). But the leaky 32-16, DirNet D and
+  the table - blind, and trained on the same screens set - land at +0.0147–0.0157 too, so it
+  is the data mix, not the told graph. The clips are 8 sources a kind, so this is a direction
+  to check rather than a measurement; for a desktop stream, screens and video are what matter.
 - **The hint pays on every client**, most where the client is weakest: it lifts bicubic to
-  ×1.26–1.64 and DirNet B from ×0.83 to ×1.66 on video, and adds +0.0015–0.0065 SSIM-Y at
+  ×1.25–1.61 and DirNet B from ×0.89 to ×1.63 on video, and adds +0.0015–0.0065 SSIM-Y at
   the same bits to every other learned model - least to notebook 8's and the table. A cheap client with the hint is not a substitute for a
-  good one on screens, though: bicubic with it adds +0.0112 there, notebook 8 alone +0.0434.
-- **The traditional stream saturates early on screens**: bicubic gains 0.0148 SSIM-Y from
-  0.46 to 3.3 bpp on screens, where notebook 8 adds 0.0434 at 0.46. Spending compute beats
+  good one on screens, though: bicubic with it adds +0.0113 there, notebook 8 alone +0.0436.
+- **The traditional stream saturates early on screens**: bicubic gains 0.0147 SSIM-Y from
+  0.46 to 3.3 bpp on screens, where notebook 8 adds 0.0436 at 0.46. Spending compute beats
   spending bits on a desktop stream by a wide margin.
 
 The notebook ran for 97 minutes, most of it - by the graphs' own CPU times - notebook 10's
 table on the ONNX Runtime CPU provider. On the re-run that added notebook 8, the same-bits
 numbers of the clients it had before moved by at most 0.0004 SSIM-Y - the codec is not
 deterministic, and the clips are re-encoded each run - but a worth, a ratio read off a flat
-curve, can move far more (DirNet B + hint on screens, ×1.27 to ×1.72).
+curve, can move far more (DirNet B + hint on screens, ×1.27 to ×1.72). The table above is
+the re-run that added notebook 16's leaky 32-16 (109 minutes): the same-bits numbers moved by
+at most 0.0002, and that worth went back to ×1.26.
+
+## Distillation, edges and a leaky ReLU (`16_upscale_distill.ipynb`)
+
+Two ways to train bodies already here better without changing what the client runs:
+**distillation** for the cheap luma 32-16 - half of its loss L1 against notebook 8's model's
+picture instead of the truth - and an **edge-weighted loss** for notebook 8's told model - the
+L1 weighted by the truth's luma gradient (Sobel, normalised to a mean of 1). Each was
+smoke-tested for two epochs from a trained model, then trained to convergence with notebook
+8's recipe on the screens patch set, at two seeds where one was not enough, and scored on the
+3,523 validation patches. The runs turned up a third thing, and it is the one that pays.
+
+| | ssim-y | psnr-y | seeds apart |
+|---|---|---|---|
+| luma 32-16, ReLU, seeds 0 / 1 | 0.9270 / 0.9305 | 34.03 / 34.27 | 0.0035 |
+| luma 32-16, ReLU, distilled | 0.9239 | 33.94 | one seed |
+| **luma 32-16, leaky ReLU, seeds 0 / 1** | **0.9309 / 0.9312** | 34.36 / 34.34 | **0.0003** |
+| luma 32-16, leaky, distilled | 0.9312 | 34.43 | one seed |
+| notebook 8 told, seeds 0 / 1 | 0.9369 / 0.9371 | 34.94 / 34.92 | 0.0002 |
+| told, edge-weighted, seeds 0 / 1 | 0.9374 / 0.9364 | 34.97 / 34.92 | 0.0010 |
+| told, leaky ReLU, seeds 0 / 1 | 0.9367 / 0.9375 | 34.94 / 35.06 | 0.0008 |
+
+- **The 32-16's seed lottery is dying ReLUs.** Counted over the validation set, its 16-wide
+  layer has lost 8 channels at seed 0, 2 at seed 1 and 10 in the distilled run. A leaky ReLU
+  (slope 0.1) cannot lose one: the two seeds land 0.0003 apart, 0.0023 above the ReLU pair's
+  mean, and above its better seed on every content but screens, where it is level. Notebook
+  4 measured dying as free, before there were screens; on this set it costs.
+- **`LeakyRelu` is free in the browser.** The leaky graph runs 0.430 ms a float32 tile,
+  0.356 a float16 one and **2.75 ms a 1080p frame** as one float16 graph, against 0.430,
+  0.354 and 2.73 for notebook 4's ReLU luma 32-16 in the same rounds (2026-10-27, the
+  harness of "Results at the client's tile", which reproduced that table's other rows).
+- **Distillation buys luma dB, not SSIM-Y.** The leaky student scores the plain seeds'
+  SSIM-Y and +0.08 dB luma against a ruler of 0.02, on every content. It is one seed, and
+  the recipe picks its epoch by SSIM-Y, which distillation does not move, so it is not
+  published. The ReLU student lost 10 of its 16 narrow channels and says nothing about the
+  teacher.
+- **The edge-weighted loss moves the error, it does not shrink it.** Both seeds keep a
+  direction in dB - screens +0.16 and +0.10, video −0.04 and −0.09 - but their SSIM-Y mean
+  (0.9369) is the plain pair's, and they are five times as far apart. Notebook 8's loss
+  stays.
+- **A leaky ReLU does nothing for notebook 8's model**: its residual blocks add their input
+  back, so nothing died. The mean is 0.9371 against 0.9370, four times as far apart. Seed 1
+  is the best single model in the project (+0.13 dB luma, ahead on every content), but picking it
+  would be picking a seed, not a body.
+- **Two epochs from a trained model say which way a loss pushes, not where it ends.** The
+  smoke tests found the edge loss's direction and missed that it does not pay.
+
+Published: the leaky luma 32-16 at seed 1 (`upscale_luma_32-16_leaky_*`, float32, float16
+and a float16 frame graph; 17,080 operations and 1,192 bytes an LR pixel, inside the op
+budget). On notebook 15's whole clips it is the cheap tier (see "Bits against compute").
+`models.ToldLuma` moved into `helpers/models.py` for this notebook; notebook 8 still defines
+its own copy.
 
 ## Tiling geometry
 
@@ -1390,6 +1470,7 @@ depend on what is in it, and again once trained: the same to 1%.
 | DirNet B, one 5×5 filter (12) | 1,800 | 0.118 | 0.102 | 0.756 | 0.8 ms |
 | DCT, fixed / decided through 32 (9) | 4,600 / 6,104 | 0.239 / 0.266 | 0.211 / 0.234 | 1.39 / 1.52 | 1.4 / 1.5 ms |
 | 32-16: reparam, luma, leaky (4, 6) | 17,080–19,392 | 0.42–0.43 | 0.34–0.35 | 2.62–2.73 | 2.6–2.7 ms |
+| luma 32-16 leaky (16) § | 17,080 | 0.430 | 0.356 | 2.75 | **2.8 ms** |
 | luma 24 + 2 blocks: notebooks 4, 7, 8 | 28,120 | 0.646 | 0.500 | 3.91 | **3.9 ms** |
 | DirNet C (12) | 8,878 | 0.963 | 0.864 | 7.05 | 7.1 ms |
 | DirNet D (12) | 11,598 | 1.069 | 0.950 | 7.72 | 7.7 ms |
@@ -1403,6 +1484,8 @@ depend on what is in it, and again once trained: the same to 1%.
 round trips are most of the time (the GPU's own share is 1.5 ms of the `S` tile's 7.4).
 † float32 only (a float16 tap can round into the next row), and after the change to
 notebook 11 described below; as first written its graphs took 5.7, 8.3 and 25.0 ms a tile.
+§ measured 2026-10-27 the same way, beside notebook 4's luma 32-16 (0.430, 0.354, 2.73) and
+notebook 8's body, which read as above.
 
 - **The table that wins on screens is the one graph on the page that cannot run.** `SDY x2`
   costs 75 ms a 1080p frame, 19 times notebook 8's model (3.9 ms) for +0.0013 SSIM-Y on
@@ -1439,10 +1522,11 @@ replaces the ones it owns.
 | | ssim-y, patches | screens, same bits | 1080p, browser | ships as |
 |---|---|---|---|---|
 | bicubic (the GPU's sampler) | 0.9049 | — | free | nothing |
-| notebook 4's model | 0.9292 | +0.0291 | 3.9 ms | one graph |
-| **notebook 8's, told the host's path** | **0.9370** | **+0.0434** | **3.9 ms** | **one graph, baked at 0.46 bpp** |
-| DirNet D | 0.9303 | +0.0366 | 7.7 ms | one graph |
-| `SDY x2` table, interpolated | 0.9343 | +0.0477 | 75 ms | one graph, 5 MB |
+| notebook 4's model | 0.9292 | +0.0292 | 3.9 ms | one graph |
+| **notebook 8's, told the host's path** | **0.9370** | **+0.0436** | **3.9 ms** | **one graph, baked at 0.46 bpp** |
+| **luma 32-16 leaky (16)** | **0.9312** | **+0.0402** | **2.8 ms** | **one graph** |
+| DirNet D | 0.9303 | +0.0367 | 7.7 ms | one graph |
+| `SDY x2` table, interpolated | 0.9343 | +0.0479 | 75 ms | one graph, 5 MB |
 | `SDY x2` table, one exact address | 0.9267 | not measured | 7.3 ms | one graph, 3.3 MB |
 | `S` table, one exact address | 0.9238 | not measured | 2.3 ms | one graph, 0.9 MB |
 | + the host's post-filter, every 5th frame | +0.005–0.007 on a model | +0.0015–0.0065 | no graph yet | a side channel and a host fit |
@@ -1460,10 +1544,12 @@ anything else, notebook 8's blind model is the safe graph and is not published y
 **No table beats it in a browser.** Notebook 11 made a table run - 7.3 ms a frame against
 75 - but reading one binned entry instead of interpolating keeps only three quarters of the
 lead on screens (+0.048 SSIM-Y, against +0.064 interpolated and +0.062 for notebook 8's
-blind model), and it is behind on photos and video. What notebook 11 does leave is the
-cheapest model that clearly beats bicubic: its `S` table, 0.9238 SSIM-Y and +0.043 on screens
-- about notebook 4's on screens - in 2.3 ms, a fallback for a GPU that cannot afford
-notebook 8's 3.9.
+blind model), and it is behind on photos and video.
+
+**The fallback is notebook 16's leaky luma 32-16**, for a GPU that cannot afford notebook 8's
+3.9 ms: 2.8 ms, 0.9312 SSIM-Y, and +0.0402 on screens at the same bits on whole clips, ahead
+of notebook 4's model and DirNet D there for less time. It replaces notebook 11's `S` table as the
+candidate: that is 0.5 ms cheaper and 0.0074 SSIM-Y worse on patches.
 
 **The post-filter is the one hint worth building**, and the only idea here that is not a
 model: it improves every client at every bitrate for about 1.5% of the bits. It needs a
@@ -1487,13 +1573,15 @@ decide.
 - **Publish notebook 8's blind model** beside the told one, and drop the 0.2 and 1.0 bpp
   told graphs (four of its seven files), which can only be worse than the 0.46 one. Fold the
   second seed and the two checks under "What a told graph needs" into the notebook.
-- **Decide on a fallback tier** from the iGPU measurement: if notebook 8's model misses the
-  frame budget there, notebook 11's `S` table (2.3 ms here) is the candidate; add it to
-  notebook 15 first, to see what it is worth on whole streamed clips.
+- **Decide whether a fallback tier is needed** from the iGPU measurement: if notebook 8's
+  model misses the frame budget there, notebook 16's leaky luma 32-16 (2.8 ms here, already
+  measured on whole clips) is the one to ship beside it, under the same contract.
 - **Compare against notebook 8's model, not notebook 4's**, in notebooks 11–14: each was
   written when notebook 4's was the best, and it no longer is.
-- **Look at photos on whole clips**: notebook 8's model is behind notebook 4's there
-  (+0.0164 against +0.0236 SSIM-Y at the same bits), which its patch scores did not show.
+- **Look at photos on whole clips**: every model trained with screens is behind notebook
+  4's there (+0.0147–0.0163 against +0.0237 SSIM-Y at the same bits), which the patch scores
+  did not show. More photo clips first, then the data mix.
+- **Point notebook 8 at `models.ToldLuma`** on its next run; it still defines its own.
 - **Skip the tiles that did not change**, in the client: exact, free, and the largest factor
   on a desktop stream.
 - **Build the post-filter's client side** as a graph - classes from the LR, 25 filters as a
