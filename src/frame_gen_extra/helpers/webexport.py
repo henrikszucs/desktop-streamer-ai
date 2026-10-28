@@ -61,10 +61,14 @@ def describe(path):
             "outside_budget": sorted(set(ops) - BUDGET)}
 
 
-def export(model, filename, size, label=None, halo=TILE_HALO, batch=1, opset=17, models_dir=None):
+def export(model, filename, size, label=None, halo=TILE_HALO, batch=1, opset=17, models_dir=None,
+           dynamic=False):
     """Write `model` as ONNX with two fixed inputs of `batch` x 3 x `size` (height, width).
 
-    `size` is the model *input*: the step plus the halo on both sides.
+    `size` is the model *input*: the step plus the halo on both sides. `dynamic=True` names the
+    batch, height and width `N`, `H` and `W` instead, as the client's graphs are: one file for
+    every tile count and tile size (a frame smaller than a tile is one tile of its own size),
+    which the client patches to fixed values for WebGL. The benchmark page needs fixed shapes.
     """
     height, width = size
     models_dir = Path(models_dir or MODELS_DIR)
@@ -74,6 +78,7 @@ def export(model, filename, size, label=None, halo=TILE_HALO, batch=1, opset=17,
     torch.onnx.export(
         copy.deepcopy(model).to("cpu").eval(), example, str(path),
         opset_version=opset, input_names=list(INPUTS), output_names=["output"],
+        dynamic_axes={name: {0: "N", 2: "H", 3: "W"} for name in (*INPUTS, "output")} if dynamic else None,
         dynamo=False,  # the classic exporter: plain op sequence, no onnxscript needed
     )
     # the exporter drops an input the model never reads (Repeat's `previous`), and the client

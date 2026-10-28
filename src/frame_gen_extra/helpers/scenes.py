@@ -20,12 +20,18 @@ So a clip is a **background** and up to four things on top of it:
   again. Nothing in the frames before it says it is coming: it is the case an extrapolator
   can only get wrong, and the data has to contain it so a score can show how wrong;
 - the **cursor**, an arrow pointer: it rests, moves to a new place along a slightly curved,
-  eased path, and rests again.
+  eased path, and rests again. It drives the drag and the menu, and `render` can leave it
+  out of the frames: desktop-streamer's capture does, and its client draws the pointer itself.
 
 What each picture gets is drawn from `PLANS` by its kind: a `page` (a tall document,
 `datasets/screens.py`), a `desktop` (a whole screen) or a `photo`. Positions are whole pixels
 at the window's resolution, as a desktop draws them; the stream's downscale makes them
 fractional.
+
+Every speed and duration here is per frame at `BASE_FPS` (30), the rate it was tuned at. A
+clip at another rate (`fps=60` for 2x frame generation) is drawn on that time line and then
+read at its own frame times - the same motion in pixels per second, so half as far a frame at
+60 fps, and a menu that opens at the same moment.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -54,6 +60,7 @@ NOTCH = (40, 120)            # pixels one wheel notch scrolls
 MAX_SPEED = 16               # pixels per frame of a steady scroll - a fast one at 30 fps
 FLICK_SPEED = (8, 48)        # pixels per frame a flick starts at
 CURSOR_SCALES = (1.0, 1.25, 1.5, 2.0)
+BASE_FPS = 30                # every speed and duration above is per frame at this rate
 BORDER = (80, 80, 80)        # the 1 px frame drawn around a dragged window or a menu
 
 
@@ -210,9 +217,42 @@ def _region(rng, size, win, origin, frames):
     return {"box": (x, y, w, h), "offset": [int(v) for v in offset]}
 
 
-def sample(rng, size, kind, frames=30, window=WINDOW, cursor_scale=None):
+def _retime(values, times):
+    """Per-frame positions read at fractional frame `times`: linearly between frames, rounded
+    to whole pixels. `values` is a list of numbers or of (x, y) pairs."""
+    array = np.asarray(values, dtype=np.float64)
+    index = np.arange(len(array))
+    if array.ndim == 1:
+        return [int(v) for v in np.round(np.interp(times, index, array))]
+    return [tuple(int(v) for v in point)
+            for point in np.round(np.stack([np.interp(times, index, array[:, k]) for k in range(array.shape[1])], 1))]
+
+
+def sample(rng, size, kind, frames=30, window=WINDOW, cursor_scale=None, fps=BASE_FPS):
     """A random scene over an image of `size` (width, height) whose kind is "page", "desktop"
-    or "photo"."""
+    or "photo", `frames` long at `fps`."""
+    if fps == BASE_FPS:
+        return _sample(rng, size, kind, frames, window, cursor_scale)
+    # drawn at the base rate over the same span of time, then read at this rate's frame times
+    rate = fps / BASE_FPS
+    base = _sample(rng, size, kind, int(np.ceil((frames - 1) / rate)) + 1, window, cursor_scale)
+    times = np.arange(frames) / rate
+    scene = Scene(kind=base.kind, window=base.window, frames=frames, origin=base.origin,
+                  background=base.background, scroll=_retime(base.scroll, times),
+                  cursor_scale=base.cursor_scale)
+    if base.region:
+        scene.region = {"box": base.region["box"], "offset": _retime(base.region["offset"], times)}
+    if base.cursor is not None:
+        scene.cursor = _retime(base.cursor, times)
+    if base.drag:
+        scene.drag = {"source": base.drag["source"], "at": _retime(base.drag["at"], times)}
+    if base.popup:
+        first, end = base.popup["frames"]
+        scene.popup = {**base.popup, "frames": (int(round(first * rate)), min(frames, int(round(end * rate))))}
+    return scene
+
+
+def _sample(rng, size, kind, frames, window, cursor_scale):
     plan = PLANS[kind]
     win = window_for(size, window)
     origin, background, scroll = _background(rng, kind, plan, size, win, frames)
@@ -279,8 +319,10 @@ def _framed(image, source):
     return piece
 
 
-def render(image, scene):
-    """The clip `scene` shows of `image` (H, W, 3), as (T, h, w, 3) uint8 frames."""
+def render(image, scene, cursor=True):
+    """The clip `scene` shows of `image` (H, W, 3), as (T, h, w, 3) uint8 frames. `cursor=False`
+    leaves the pointer out - desktop-streamer's capture does, and its client draws the pointer
+    itself - while it still drags windows and opens menus where it is."""
     image = np.asarray(image, dtype=np.uint8)
     w, h = scene.window
     x0, y0 = scene.origin
@@ -300,7 +342,7 @@ def render(image, scene):
             _paste(frame, dragged, *scene.drag["at"][t])
         if menu is not None and scene.popup["frames"][0] <= t < scene.popup["frames"][1]:
             _paste(frame, menu, *scene.popup["at"])
-        if scene.cursor is not None:
+        if cursor and scene.cursor is not None:
             _paste(frame, colours, *scene.cursor[t], alpha=alpha)
         frames.append(frame)
     return np.stack(frames)

@@ -13,7 +13,9 @@ expects next, the same size. The halo is the model's business: the scores cut it
   to `previous` at every whole-pixel offset within `radius`, and the best offset is applied
   once more. `block=None` finds one offset for the whole picture, which is right for a
   scroll and nothing else. A block can only follow motion the input shows, so `radius` must
-  not exceed the halo: content that moves further came from outside the tile.
+  not exceed the halo: content that moves further came from outside the tile. `fraction`
+  carries the motion only that share of the way: ½ when the inputs are two received frames
+  N-2 and N and the output is N+1, as in 2x frame generation.
 
 The learned ones add a correction to `current`, and their last convolution starts at zero,
 so untrained they are `Repeat` exactly - as upscale's models start as bicubic:
@@ -62,10 +64,11 @@ class Shift(nn.Module):
     # equally well (a flat block, a still one) the block stays where it is
     PENALTY = 1e-4
 
-    def __init__(self, radius=4, block=16):
+    def __init__(self, radius=4, block=16, fraction=1.0):
         super().__init__()
         self.radius = radius
         self.block = block
+        self.fraction = fraction
         self.offsets = [(dy, dx) for dy in range(-radius, radius + 1) for dx in range(-radius, radius + 1)]
 
     def offsets_of(self, previous, current):
@@ -109,6 +112,8 @@ class Shift(nn.Module):
         return -torch.stack([dx, dy], dim=1).to(current.dtype)
 
     def forward(self, previous, current):
+        if self.fraction != 1.0:
+            return warp(current, self.fraction * self.field(previous, current))
         r = self.radius
         n, channels, height, width = current.shape
         dy, dx = self._motion(previous, current)
@@ -204,17 +209,23 @@ class TileSearch(nn.Module):
     levels (of 255), so `sharpness` 10 makes one level of difference worth a factor of e^10.
 
     `stride` samples the cost on a coarser grid: a mean over the tile needs a few thousand
-    positions, not every one, and the work falls with its square.
+    positions, not every one, and the work falls with its square. `fraction` is the share of
+    the found motion to carry: 1 for consecutive frames, ½ for 2x frame generation (received
+    frames N-2 and N in, N+1 out). `still` gates it: a tile whose cost at no motion - the mean
+    luma difference between the two frames - is under `still` luma levels gets no motion at
+    all, so the warp returns `current` as it is.
 
     Nothing in it learns. Outside the operators upscale measured as fast: `Sub`, `Abs`,
     `ReduceMean`, `Softmax` and a `MatMul` of 81 numbers a tile at the defaults - all on the GPU
     in the browser (notebook 3, "Speed").
     """
 
-    def __init__(self, radius=4, scale=2, sharpness=10.0, stride=1):
+    def __init__(self, radius=4, scale=2, sharpness=10.0, stride=1, fraction=1.0, still=None):
         super().__init__()
         self.radius, self.scale, self.sharpness, self.stride = radius, scale, sharpness, stride
+        self.fraction, self.still = fraction, still
         offsets = [(dy, dx) for dy in range(-radius, radius + 1) for dx in range(-radius, radius + 1)]
+        self.no_motion = offsets.index((0, 0))
         size = 2 * radius + 1
         luma = (RGB_TO_YUV[0].view(1, 3, 1, 1) / scale ** 2).expand(1, 3, scale, scale)
         moved = torch.zeros(len(offsets), 1, size, size)
@@ -228,15 +239,23 @@ class TileSearch(nn.Module):
         for conv, weight in ((self.luma, luma), (self.moved, moved), (self.centre, centre)):
             conv.weight.data.copy_(weight)
             conv.weight.requires_grad_(False)
-        # (x, y) of each offset in full-resolution pixels, as "read from" (minus the motion)
-        self.register_buffer("table", -scale * torch.tensor([(dx, dy) for dy, dx in offsets], dtype=torch.float32))
+        # (x, y) of each offset in full-resolution pixels, as "read from" (minus the motion),
+        # times the share of the motion to carry - a constant, so the graph pays nothing for it
+        self.register_buffer("table", -scale * fraction * torch.tensor([(dx, dy) for dy, dx in offsets],
+                                                                       dtype=torch.float32))
 
     def forward(self, previous, current):
         """(N, 2, 1, 1): the (x, y) offset every pixel of the tile is read from."""
         difference = self.centre(self.luma(current)) - self.moved(self.luma(previous))
         cost = 255.0 * difference.abs().mean(dim=(2, 3))
         weights = torch.softmax(-self.sharpness * cost, dim=1)
-        return (weights @ self.table)[:, :, None, None]
+        motion = weights @ self.table
+        if self.still is not None:
+            # the cost of no motion is how much the tile changed: under `still`, nothing moved,
+            # and a zero motion hands `current` back as it is - a gate for two numbers a tile
+            moved = cost[:, self.no_motion:self.no_motion + 1] >= self.still
+            motion = motion * moved.to(motion.dtype)
+        return motion[:, :, None, None]
 
 
 class Motion(nn.Module):
@@ -316,8 +335,10 @@ class Gate(nn.Module):
     did - the rule a client can apply per tile before it runs anything. "Moved" is the run set's
     own definition (`runs.CHANGED_LEVEL`, `runs.MOVING_SHARE`), over the whole input.
 
-    For scoring in torch; in the client it is a comparison of two tiles and a skipped run, not
-    part of the graph.
+    In the graph it is a few elementwise operators (`Sub`, `Mul`, `ReduceSum`, `Abs`, a
+    comparison, `ReduceMean`, `Where`) that return `current` for a tile where nothing moved, so
+    the client needs no code for it. A client that compared the tiles itself could also skip
+    running the model on them.
     """
 
     LUMA = (0.299, 0.587, 0.114)
@@ -325,13 +346,11 @@ class Gate(nn.Module):
     def __init__(self, model, level=8, share=0.005):
         super().__init__()
         self.model, self.level, self.share = model, level / 255, share
+        self.register_buffer("luma", torch.tensor(self.LUMA).view(1, 3, 1, 1))
 
     def forward(self, previous, current):
-        luma = torch.tensor(self.LUMA, device=current.device, dtype=current.dtype).view(1, 3, 1, 1)
-        changed = (((current - previous) * luma).sum(1).abs() > self.level).float().mean(dim=(1, 2))
+        changed = (((current - previous) * self.luma).sum(1).abs() > self.level).float().mean(dim=(1, 2))
         moved = (changed >= self.share).view(-1, 1, 1, 1)
-        if not moved.any():
-            return current
         return torch.where(moved, self.model(previous, current), current)
 
 

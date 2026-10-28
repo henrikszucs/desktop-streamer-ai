@@ -22,7 +22,7 @@ below):
 | --- | --- | --- |
 | [`src/upscale/`](src/upscale/summary.md) | more pixels out than in | fifteen notebooks: static baselines, nine ways to build a model, host hints, and the bits-against-compute trade-off; nothing shipped to the client yet |
 | [`src/frame_gen_intra/`](src/frame_gen_intra/summary.md) | interpolate between two frames | not started |
-| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | extrapolate past the newest frame | four notebooks: runs of desktop-like motion, static baselines, two trained networks that hedge, and a tile search built from fixed convolutions (+4.0 dB, 2.3 ms a 1080p frame in Chrome's WebGPU, published); nothing shipped to the client yet |
+| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | 2x frame generation without latency: the frame between two received ones, made before the next arrives | four notebooks: 60 fps runs of desktop-like motion, static baselines, two trained networks that hedge, and a tile search built from fixed convolutions (+11.1 dB over repeating the frame, 2.3 ms a 1080p frame in Chrome's WebGPU) that passes desktop-streamer's client tests in place of its mock |
 
 ## The mock graphs the client runs
 
@@ -254,13 +254,13 @@ desktop-streamer-ai/
 │   │   ├── screens/            what screens.py draws, train/ and test/, and screens.json
 │   │   └── captures/           screenshots of your own
 │   ├── upscale/                00_data_preprocess.ipynb's patch pairs, manifest.json, synthetic/
-│   └── frame_gen_extra/        its 00_data_preprocess.ipynb's frame runs, manifest.json, synthetic/
+│   └── frame_gen_extra/        its 00_data_preprocess.ipynb's 60 fps frame runs, manifest.json, synthetic/
 ├── src/                        the source: code, notebooks, and what training leaves behind
 │   ├── mock/                   make_mock_models.py, the three stand-in graphs the client runs
 │   ├── frame_gen_intra/        summary.md only, nothing built yet
 │   ├── frame_gen_extra/        the upscale layout, four notebooks in
 │   │   ├── summary.md                the problem, the data, the baselines
-│   │   ├── 00_data_preprocess.ipynb  still screens animated as a desktop in use, streamed, cut into runs
+│   │   ├── 00_data_preprocess.ipynb  still screens animated at 60 fps as a desktop in use, streamed, cut into runs
 │   │   ├── 01_extrapolate_dummy.ipynb  repeat, linear and motion-shift extrapolation: the bar to beat
 │   │   ├── 02_extrapolate_twoscale.ipynb  current + a correction made at 1/2 and 1/4 resolution, and its control
 │   │   ├── 03_extrapolate_motion.ipynb  motion instead of pixels: a learned head, a tile search, and both
@@ -303,5 +303,5 @@ desktop-streamer-ai/
 │           └── www/                the page
 └── dist/                       committed — the finished models, where every export lands
     ├── upscale/                *.onnx, served to the page as models/
-    └── frame_gen_extra/        *.onnx with extrapolate.onnx's two-input contract
+    └── frame_gen_extra/        *.onnx with extrapolate.onnx's two-input contract; extrapolate2x_tilesearch_r4_s2.onnx is the client's
 ```

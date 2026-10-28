@@ -60,6 +60,10 @@ def describe(manifest):
           f"{manifest['image_clip']['window'][1]} window, {manifest['image_clip']['fps']} fps")
     print("run    ", f"{manifest['input']} px ({manifest['core']} px + a halo of {manifest['halo']}), "
           f"{manifest['frames_per_run']} frames each")
+    every = runs.received_every(manifest)
+    if every > 1:
+        print("stream ", f"every {every}th frame received - the inputs are frames N-{every} and N, "
+              f"the target N+1 (2x frame generation)" if every == 2 else f"every {every}th frame received")
 
 
 def to_tensor(frames):
@@ -101,9 +105,10 @@ def evaluate(model, inputs, targets, masks, trim, batch_size=256):
             for name, scores in totals.items() if counts[name]}
 
 
-def loader(data_dir, manifest, batch_size=64, context=2, ahead=1, halo=None):
+def loader(data_dir, manifest, batch_size=64, context=2, ahead=1, halo=None, step=None):
     """The training loader: a random newest frame and a random horizontal flip per run."""
-    train_set = runs.Runs(data_dir, "train", manifest, augment=True, context=context, ahead=ahead, halo=halo)
+    train_set = runs.Runs(data_dir, "train", manifest, augment=True, context=context, ahead=ahead, halo=halo,
+                          step=step)
     # num_workers stays 0: the array is memory mapped, and worker processes would copy it
     print(f"train {len(train_set):6} runs from {len(train_set.sources)} sources")
     return DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=True)
