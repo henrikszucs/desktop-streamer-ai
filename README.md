@@ -22,7 +22,7 @@ below):
 | --- | --- | --- |
 | [`src/upscale/`](src/upscale/summary.md) | more pixels out than in | fifteen notebooks: static baselines, nine ways to build a model, host hints, and the bits-against-compute trade-off; nothing shipped to the client yet |
 | [`src/frame_gen_intra/`](src/frame_gen_intra/summary.md) | interpolate between two frames | not started |
-| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | 2x frame generation without latency: the frame between two received ones, made before the next arrives | four notebooks: 60 fps runs of desktop-like motion, static baselines, two trained networks that hedge, and a tile search built from fixed convolutions (+11.1 dB over repeating the frame, 2.3 ms a 1080p frame in Chrome's WebGPU) that passes desktop-streamer's client tests in place of its mock |
+| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | 2x frame generation without latency: the frame between two received ones, made before the next arrives | six notebooks: 60 fps runs of desktop-like motion, static baselines, two trained networks that hedge, and a tile search built from fixed convolutions (+11.1 dB over repeating the frame on 80 px samples, +5.8 on whole frames in the client's tiles, 2.3 ms a 1080p frame in Chrome's WebGPU) that passes desktop-streamer's client tests in place of its mock; an oracle bounds what a learned picker could add at ~2 dB; a motion hint from the host would add +6.0 dB but needs a host capturing at twice the stream's rate, and is shelved |
 
 ## The mock graphs the client runs
 
@@ -258,14 +258,18 @@ desktop-streamer-ai/
 ├── src/                        the source: code, notebooks, and what training leaves behind
 │   ├── mock/                   make_mock_models.py, the three stand-in graphs the client runs
 │   ├── frame_gen_intra/        summary.md only, nothing built yet
-│   ├── frame_gen_extra/        the upscale layout, four notebooks in
+│   ├── frame_gen_extra/        the upscale layout, six notebooks in
 │   │   ├── summary.md                the problem, the data, the baselines
 │   │   ├── 00_data_preprocess.ipynb  still screens animated at 60 fps as a desktop in use, streamed, cut into runs
 │   │   ├── 01_extrapolate_dummy.ipynb  repeat, linear and motion-shift extrapolation: the bar to beat
 │   │   ├── 02_extrapolate_twoscale.ipynb  current + a correction made at 1/2 and 1/4 resolution, and its control
 │   │   ├── 03_extrapolate_motion.ipynb  motion instead of pixels: a learned head, a tile search, and both
+│   │   ├── 04_extrapolate_oracle.ipynb  whole frames in the client's tiles, and the most a learned picker could add
+│   │   ├── 05_extrapolate_hint.ipynb  the host's motion hint for the frame it does not send - shelved: no host captures it
 │   │   └── helpers/                  sources, degrade, metrics copied from upscale; scenes.py (the
-│   │                                 desktop motion), runs.py, models.py, training.py, speed.py, webexport.py
+│   │                                 desktop motion), runs.py, clips.py (whole frames, cut as the client
+│   │                                 cuts them), models.py, training.py, speed.py, show.py (motion
+│   │                                 pictures), hints.py (the host's hint), webexport.py
 │   └── upscale/
 │       ├── summary.md                the models, the numbers, and what they do not say
 │       ├── 00_data_preprocess.ipynb  frames → LR/HR patch clips, a halo around the LR side

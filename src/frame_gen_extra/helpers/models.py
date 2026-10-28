@@ -36,6 +36,9 @@ it. The offset comes from `TileSearch` - notebook 1's tile shift built from fixe
 convolutions, one motion a tile, found by search and not learned - and from a learned
 correction on top, either of which can be left out. `Gate` wraps any model with the rule a
 client can apply per tile: repeat where nothing moved.
+
+With the host's help (notebook 5): `Hinted` moves `current` by a motion the host measured on
+the frame it did not send, and falls back to a search where that hint came late.
 """
 
 import torch
@@ -244,10 +247,13 @@ class TileSearch(nn.Module):
         self.register_buffer("table", -scale * fraction * torch.tensor([(dx, dy) for dy, dx in offsets],
                                                                        dtype=torch.float32))
 
-    def forward(self, previous, current):
-        """(N, 2, 1, 1): the (x, y) offset every pixel of the tile is read from."""
-        difference = self.centre(self.luma(current)) - self.moved(self.luma(previous))
-        cost = 255.0 * difference.abs().mean(dim=(2, 3))
+    def difference(self, previous, current):
+        """(N, offsets, h, w): |current - previous moved by d| at every position the search
+        samples - 1/`scale` of the resolution, every `stride`th, `radius` in from each edge."""
+        return (self.centre(self.luma(current)) - self.moved(self.luma(previous))).abs()
+
+    def choose(self, cost):
+        """The motion (N, 2) that costs (N, offsets) in luma levels pick, gated by `still`."""
         weights = torch.softmax(-self.sharpness * cost, dim=1)
         motion = weights @ self.table
         if self.still is not None:
@@ -255,7 +261,32 @@ class TileSearch(nn.Module):
             # and a zero motion hands `current` back as it is - a gate for two numbers a tile
             moved = cost[:, self.no_motion:self.no_motion + 1] >= self.still
             motion = motion * moved.to(motion.dtype)
-        return motion[:, :, None, None]
+        return motion
+
+    def forward(self, previous, current):
+        """(N, 2, 1, 1): the (x, y) offset every pixel of the tile is read from."""
+        cost = 255.0 * self.difference(previous, current).mean(dim=(2, 3))
+        return self.choose(cost)[:, :, None, None]
+
+    def costs(self, previous, current):
+        """(N, offsets): the tile's cost of every offset, in luma levels."""
+        return 255.0 * self.difference(previous, current).mean(dim=(2, 3))
+
+    def blocks(self, previous, current, block):
+        """(N, 2, H, W): one motion per `block` x `block` pixels instead of one per tile - the same
+        costs, averaged over each block, each block choosing (and gated) on its own. The ring the
+        search cannot sample takes the nearest block's. For scoring in torch, not in the graph."""
+        cells = max(1, block // (self.scale * self.stride))
+        cost = 255.0 * F.avg_pool2d(self.difference(previous, current), cells, ceil_mode=True)
+        n, k, rows, cols = cost.shape
+        motion = self.choose(cost.permute(0, 2, 3, 1).reshape(-1, k)).view(n, rows, cols, 2).permute(0, 3, 1, 2)
+        # the full-resolution pixel each block starts at: the first sampled position is `radius`
+        # half-resolution pixels in
+        margin = self.scale * self.radius
+        height, width = current.shape[-2:]
+        y = ((torch.arange(height, device=current.device) - margin) // block).clamp(0, rows - 1)
+        x = ((torch.arange(width, device=current.device) - margin) // block).clamp(0, cols - 1)
+        return motion[:, :, y][:, :, :, x]
 
 
 class Motion(nn.Module):
@@ -352,6 +383,28 @@ class Gate(nn.Module):
         changed = (((current - previous) * self.luma).sum(1).abs() > self.level).float().mean(dim=(1, 2))
         moved = (changed >= self.share).view(-1, 1, 1, 1)
         return torch.where(moved, self.model(previous, current), current)
+
+
+class Hinted(nn.Module):
+    """`current` moved by the motion the host measured, where it sent one in time, and by
+    `search` where it did not (notebook 5).
+
+    The host captures the frame it does not send, so it can measure the motion from N to N+1
+    that the client can only guess. `hint` is (N, 3) per tile: that motion (x, y) in stream
+    pixels, and 1 if it arrived in time or 0 if not - then the tile falls back to `search`, a
+    `TileSearch` carrying its share of the motion between the received frames. One graph does
+    both, so the client never has to choose which to run.
+    """
+
+    def __init__(self, search):
+        super().__init__()
+        self.search = search
+
+    def forward(self, previous, current, hint):
+        found = self.search(previous, current)                     # (N, 2, 1, 1): read from
+        sent = hint[:, 2:3, None, None]
+        offsets = sent * -hint[:, :2, None, None] + (1 - sent) * found
+        return warp(current, offsets.expand(-1, -1, *current.shape[-2:]))
 
 
 def warp(picture, offsets):

@@ -7,7 +7,7 @@ Interpolation (`../frame_gen_intra/`) would wait for N+2 and add a received inte
 latency; extrapolation adds none. desktop-streamer's client already schedules it this way: an
 extrapolated frame is shown half a frame interval after the frame it came from.
 
-> **Status: four notebooks, and a graph that passes desktop-streamer's client tests in place
+> **Status: six notebooks, and a graph that passes desktop-streamer's client tests in place
 > of its mock.** `dist/frame_gen_extra/extrapolate2x_tilesearch_r4_s2.onnx` has the mock's
 > contract exactly - `previous`, `current` and `output`, each `[N, 3, H, W]` with `N`, `H`, `W`
 > symbolic - and all 14 tests of desktop-streamer's `tests/enhance.test.js` pass with it as
@@ -36,6 +36,19 @@ extrapolated frame is shown half a frame interval after the frame it came from.
 > **No trained network beats it.** Asked for pixels (notebook 2, +0.91 dB) or for motion
 > (notebook 3, +2.01 dB), a network trained on two received frames hedges, and on a desktop
 > that means blur. A learned correction on top of the search only drifts off it.
+>
+> **On whole frames it gains half as much, and a learned picker could add at most ~2 dB.**
+> Cut into the client's 328×188 tiles (notebook 4), the search is +5.75 dB over repeat on the
+> changed tiles, not +11.09, and nothing on desktops. An oracle that picks per 4×4 cell among
+> six fixed candidate motions - repeat, the tile's, per-block ones, the cost's other minima -
+> is +2.09 dB over the search; it sees N+1, so a real picker gets less. Picking by how well a
+> candidate explains N−2 → N loses to the search outright.
+>
+> **The search is the two-frame answer.** Carrying less of the motion, or gating it per cell,
+> does not beat it (notebook 4's numbers, "The ceiling of choosing"). A hint from the host -
+> the motion of the frame it does not send - would be worth +5.95 dB (notebook 5), but it needs
+> a host capturing at twice the stream's rate, and desktop-streamer's captures at the rate it
+> streams. It was prototyped there and reverted; the graph that takes it is not published.
 
 **One notebook is one model**, as in `../upscale/`: a notebook owns its method, its numbers
 and its export cell, and publishes into `dist/frame_gen_extra/` at the repo root.
@@ -97,15 +110,57 @@ Run in order, from this folder:
   encoder), from `models.TileSearch` (notebook 1's tile shift built from fixed convolutions,
   nothing learned), or from both. Scores the gates, and publishes the tile search: the
   client's graph and a fixed 36-tile copy for the benchmark page. See "Motion".
+- `04_extrapolate_oracle.ipynb` — **the ceiling of choosing**, before training a picker: the
+  validation clips rebuilt whole and cut into the client's tiles, the search per tile and per
+  block, an oracle over fixed candidate motions per cell, and a picker that needs no training.
+  Nothing is trained or exported; a few minutes. See "The ceiling of choosing".
+- `05_extrapolate_hint.ipynb` — **a hint from the host**: the motion of each tile from N to the
+  N+1 the host captured, measured on the clean frames - exhaustively and as cheaply as a host
+  can afford - scored per tile and per block, its bits, late hints falling back to the
+  search, and the hinted graph exported to `checkpoints/export/` - shelved: no real host captures
+  the frame it is measured on. Nothing is trained. See "A hint from the host".
 
 The code the notebooks share lives in `helpers/`. `sources.py`, `degrade.py` and `metrics.py`
 are copies of upscale's, so a change made for one problem cannot quietly change the other's
 data or units. `scenes.py` is the desktop motion. `runs.py` reads the run set back, picks the
-received frames, and holds the one definition of a changed sample. `models.py` holds every
-method with the client's two-input contract. `training.py` handles loading, grouped scoring
-and upscale's training loop. `speed.py` is the timing. `webexport.py` is the two-input export
-into `dist/frame_gen_extra/`, at fixed shapes or with `N`, `H` and `W` symbolic as the client
-needs.
+received frames, and holds the one definition of a changed sample. `clips.py` rebuilds a
+split's whole clips from the manifest and cuts them as the client's `planTiles` does.
+`models.py` holds every method with the client's two-input contract. `training.py` handles
+loading, grouped scoring and upscale's training loop. `speed.py` is the timing. `show.py`
+draws motion for the notebooks: arrows of what moved, changes and errors on one colour
+scale, a search's costs, and a motion followed over time. `hints.py` is the host's
+measurement of a hint, as notebook 5 scores it. `webexport.py` is the export
+into `dist/frame_gen_extra/` - the two frames and any per-tile input such as the hint - at
+fixed shapes or with `N`, `H` and `W` symbolic as the client needs.
+
+## The methods at a glance
+
+Every method gets received frames N−2 and N and makes N+1. Three ways to make it: change
+the brightness of each pixel, draw it with a network, or copy pixels of N from where a
+motion points (`GridSample`). Scores are wPSNR over repeat on the 749 changed samples.
+
+| method | notebook | how it makes N+1 | learns? | vs repeat |
+| --- | --- | --- | --- | --- |
+| repeat | 1 | N again | no | |
+| linear (the mock) | 1 | N + (N − (N−2)) per pixel: lands on N+2 | no | −3.75 dB |
+| half step | 1 | N + ½ (N − (N−2)) per pixel | no | −1.76 dB |
+| shift, tile / blocks | 1 | the whole-pixel offset that best carries N−2 onto N, searched over every offset, half of it applied to N | no: a search | +10.11 / +8.68 dB |
+| two-scale network, control | 2 | a network draws a correction added to N | yes, all of it | +0.91 / +0.34 dB |
+| learned motion | 3 | a network outputs an offset per pixel; N copied from there | yes, all of it | +2.01 dB |
+| **tile search** (published) | 3 | the cost of 81 motions averaged over the tile, a softmax, one motion; half of it applied to N | **no**: fixed convolutions, numbers chosen by measuring | **+11.09 dB** |
+| search + correction | 3 | the tile search plus a learned correction per pixel | the correction only, and no epoch of it beat none | +11.09 dB (untrained) |
+| `Gate`, `still` | 3 | rules: repeat where the two frames match | no | (on unchanged tiles) |
+| oracle | 4 | per cell, the candidate motion closest to N+1 | not a model: it reads the answer | +2.09 dB over the search, whole tiles |
+| match picker | 4 | per cell, the candidate that best carries N−2 onto N | no | −0.13 to −0.87 dB under the search |
+| hint (shelved) | 5 | the motion from N to N+1 the host measured on the frame it did not send, applied to N - needs a host capturing at twice the stream's rate | no: a search on the host | +5.95 dB over the search, whole tiles |
+
+Everything that learns made N+1 worse than the search that does not. A network trained on
+two frames hedges - under L1, a little of every place content might have gone - and on a
+desktop that is blur. The notebooks show it: notebook 1 follows a scroll over time and draws
+each shift's motion against the true one; notebook 2 draws what each network *added* to N
+next to what had to change; notebook 3 shows the search's 81 costs and softmax weights, and
+every model's motion field; notebook 4 follows a wheel scroll frame by frame, where the
+search wins while it runs and loses the frame it stops.
 
 ## The data
 
@@ -303,6 +358,131 @@ KB, and on the desktop CPU it takes 1.6 ms a tile.
 browser without WebGPU, and there its enhancer turns every enhancement off and shows the
 error when this graph fails to load.
 
+## The ceiling of choosing
+
+Notebook 4. Every network so far hedged. The combination of learning and search left is a
+small network that *picks*, per cell, one of a few motions the search proposes - a choice,
+which cannot be averaged into a blur. Before training one, this measures what it could gain.
+
+**Whole frames.** The 113 validation clips are made again from the manifest - file, scene,
+degradation (`clips.rebuild`; within x264's run-to-run difference of the stored runs, about
+3 levels at 0.2 bpp) - and cut into the client's tiles exactly as `planTiles` cuts them: 6,700
+tiles of 328×188 at every second received frame, 2,480 changed, each scored on the region
+the client keeps.
+
+| wPSNR, changed | 80 px samples (749) | whole-frame tiles (2,480) | all tiles (6,700) |
+| --- | --- | --- | --- |
+| repeat | 25.69 | 27.09 | 62.84 |
+| linear (the mock) | 21.94 (−3.75) | 23.22 (−3.86) | 56.99 (−5.84) |
+| **tile search (published)** | **36.78 (+11.09)** | **32.84 (+5.75)** | **64.47 (+1.64)** |
+| tile search, ±16 px | 36.00 (+10.31) | 32.80 (+5.71) | 64.45 (+1.61) |
+| per 64 px block | 36.78 (+11.09) | 32.41 (+5.32) | 63.90 (+1.06) |
+| per 32 px block | 35.49 (+9.80) | 31.46 (+4.37) | 63.08 (+0.25) |
+
+On whole tiles the search gains half as much, and on desktops nothing (28.66 against
+repeat's 28.68): a 320×180 region counts as changed when a dragged window or a menu moves a
+corner of it, and one motion cannot move the corner without the rest. Pages drop most, 37.46
+on samples to 32.42. Neither a longer reach nor smaller blocks help. A third of the page
+frames that scroll move more than 8 px between received frames, but those are wheel notches
+easing in and out, where half the motion from N−2 to N is not the motion to N+1. Smaller
+blocks bring back the false matches notebook 1 found.
+
+**The oracle** takes, per cell, the candidate closest to the true N+1, by the error the score
+weighs. It sees the answer, so it bounds any picker over those candidates from above. On the
+changed whole-frame tiles, over the published search:
+
+| candidates | per pixel | per 4×4 | per 8×8 | per 16×16 | per tile |
+| --- | --- | --- | --- | --- | --- |
+| repeat, tile | +1.78 | +0.96 | +0.82 | +0.74 | +0.50 |
+| + per-block motions (64, 32 px) | +2.72 | +1.66 | +1.45 | +1.27 | +0.84 |
+| + the cost's next two minima | +3.77 | **+2.09** | +1.77 | +1.56 | +1.10 |
+
+Per pixel it picks noise as well; per 4×4 is what a picker at a quarter of the resolution
+decides. By kind (per 4×4, all six candidates): pages 35.10 against the search's 32.42,
+desktops 30.08 against 28.66, photos 34.90 against 33.50, video 39.74 against 37.23, around
+the pointer 31.76 against 29.31. Two kinds of choice make it up:
+
+- **whether a motion goes on.** The tiles it gains most on are pages where a wheel notch
+  ended between N and N+1: the search carries the motion on (18 dB) and the oracle repeats
+  (40). Choosing only repeat or the tile, once per tile, is +0.50;
+- **where each motion is.** A window dragged or a region scrolled over a still desktop,
+  where it takes the per-block motions for the part that moves.
+
+**A picker without training** - per cell, the candidate whose motion carried the whole way
+best takes N−2 to N - loses to the search at every cell size: −0.13 dB per 32×32, −0.34 per
+16×16, −0.87 per 8×8 (repeat, tile and blocks; with the minima, worse). Within a cell, two
+frames are as ambiguous as within a pixel. Whether a scroll stops is not in them at all.
+
+So a learned picker could gain at most ~2 dB on changed tiles, and a realistic one less. The
+candidates are not the limit; the evidence for choosing is.
+
+**Two static changes, measured afterwards, do not help either.** Carrying less than half the
+motion - betting on the scroll stopping - loses where it goes on more than it wins where it stops
+(32.84 dB at a half, 31.66 at 0.45, 29.57 at 0.3). A gate per cell between the tile's motion and
+none, chosen by which explains N−2 → N better there, is at best the search (32.87 at 64 px,
+32.66 at 16) and worse the more readily it picks none. The published search stays the
+two-frame method.
+
+## A hint from the host
+
+**Shelved: no real host can send it.** It needs the frame between two the stream sends, and
+desktop-streamer's host captures at the rate it streams. What follows is what that frame would
+be worth, kept as the measure of the gap two frames leave.
+
+Notebook 5. The host captures at the display rate and sends every second frame, so it has
+N+1 - the frame the client makes - before dropping it. Measuring how each client tile moved
+from N to N+1 there, and sending that, gives the client what notebook 4 found it lacks:
+whether a scroll goes on.
+
+**The measurement** (`hints.measure`) is notebook 1's shift between the clean frames N and
+N+1 - before the stream's shrink and codec, as the host has them - for every client tile.
+The host's form starts at an eighth of the source, ±4 pixels (±32 source, ±16 stream), and
+refines by ±1 at each finer level down to the source: 0.74 million absolute differences a
+tile, 0.8 billion a second for a 1080p stream's 36 tiles at 30 hints a second. It finds the
+same motion as an exhaustive search of all 1,089 offsets on 94% of the changed tiles.
+
+| wPSNR, changed whole-frame tiles (2,488) | all | page | desktop | photo | video | pointer |
+| --- | --- | --- | --- | --- | --- | --- |
+| repeat | 27.15 | 25.87 | 28.62 | 25.91 | 36.16 | 25.79 |
+| tile search (published) | 32.85 | 32.46 | 28.60 | 33.49 | 37.19 | 29.44 |
+| hint per tile, whole stream px | 37.32 | 40.54 | 28.85 | 35.60 | 37.46 | 35.11 |
+| hint per tile, half px, exhaustive | 38.88 | 42.04 | 28.92 | 38.05 | 37.80 | 36.36 |
+| **hint per tile, half px, the host's** | **38.80** | **41.88** | 28.90 | **38.01** | 37.78 | **36.44** |
+| hint per 32 px block, whole px | 37.78 | 39.47 | **33.72** | 35.96 | **40.70** | 36.30 |
+| hint per tile at the stream's resolution, parabola, ±2 from 1/8 (desktop-streamer's `hint.js`) | 38.58 | 41.40 | 29.00 | 37.95 | 37.89 | 36.20 |
+
+- **It knows when a scroll stops.** Pages gain 9.4 dB over the search, around the pointer 7.0.
+  On notebook 4's wheel-scrolled clip the hinted frames average 49.2 dB, the search's 38.8 and
+  repeat's 41.5.
+- **Half a stream pixel is worth 1.5 dB.** A host whose grey frames are the stream's own size
+  gets it back with a parabola through the costs either side of the best offset (38.68 from
+  ±4 at a quarter, 38.58 from ±2 at an eighth for half the work - the form desktop-streamer
+  runs).
+- **Per tile it still cannot follow a desktop** (+0.3). Per 32 px block it can (+5.1), and
+  video gains too, but pages lose 2.4 to false matches and whole pixels, for ten times the
+  bits. A block hint at half pixels, sent only where a block leaves its tile's motion, is
+  untried.
+- **Bits**: two signed bytes a tile, (x, y) in half stream pixels - 1.9 kbit/s at 640×360,
+  17 kbit/s at 1080p. Per block, a bit per block and two bytes for each that moves apart from
+  its tile: 174 kbit/s at 1080p.
+- **Late hints** fall back to the search, tile by tile: with a quarter of them late the changed
+  tiles score 37.52, with all of them late exactly the search.
+
+**The hinted graph**, `checkpoints/export/extrapolate2x_hinted_tilesearch_r4_s2.onnx` (37.5
+KB, not published): `previous` and `current` as before, and `hint`, `[N, 3]` float32 - per tile, in the
+client's tile order, the motion (x, y) from N to N+1 in stream pixels and 1 if it arrived (0:
+the published search's guess). Checked against torch at 36 and 4 tiles and at one of 64×32,
+with half the hints missing. It runs the search either way, so it costs what the published
+graph does plus a few elementwise operators; its browser time is not measured yet.
+
+**Prototyped in desktop-streamer and reverted.** The host's ffmpeg line captured at twice the
+stream's rate and split it - even frames to the encoder, every frame as grey down a third pipe -
+and a worker measured each pair (12 ms a 1080p frame on one desktop core, the search at the
+stream's resolution with a parabola, 38.58 dB). It ran against a real ffmpeg and found a scroll
+on every tile. It was taken out because a real host cannot capture faster than it streams; a
+raw ffmpeg output left to its own pacing also doubles its first frame, which would have put
+every hint a frame off - worth knowing for anything that pairs two ffmpeg outputs.
+
 ## In desktop-streamer
 
 `extrapolate2x_tilesearch_r4_s2.onnx` copied over the client's
@@ -338,8 +518,15 @@ again; every notebook takes its spacing from the manifest.
 
 - **Does a guess read better than a repeated frame, live?** 2x generation shows a guess every
   other frame; the scores treat its errors as pixel error, not as judder.
-- **One motion per 328×188 tile.** The 80 px samples cannot show what it does to a tile that
-  holds two motions - a scrolled page beside a still panel.
+- **Can the client's own knowledge stand in for the hint?** When the peer drives, it knows its
+  own wheel and drag input, and the host already sends the pointer's position apart from the
+  picture. A scroll stopping and a window following the pointer are the two cases two frames
+  cannot predict; timing that input against frames that arrive later is unexplored.
+- **Is a third received frame the evidence a picker lacks?** Whether a scroll stops is half
+  the oracle's gain, and two frames cannot show deceleration. Carrying the acceleration
+  outright lost on the 30 fps set; as an input to a picker it is untested.
+- **Whole frames are 640×360 here.** A 1080p stream has 36 tiles, each a smaller share of the
+  screen, so one motion a tile should hold more often there.
 - **The scenes are drawn, not recorded.** Their speeds, pauses and event rates are guesses
   about how people use a desktop, and 60 fps is reached by reading a 30 fps motion between its
   frames. A few minutes of real 60 fps screen recording would check them, and there is no
@@ -349,15 +536,15 @@ again; every notebook takes its spacing from the manifest.
 
 ## Next
 
-1. **Run it in a live session.** The graph is in desktop-streamer's client, uncommitted. Turn
-   on extrapolate in a room, watch a scroll and a dragged window at 60 fps, and time it on a
-   laptop iGPU - the 3090 numbers are a floor, and an Intel UHD has about a fortieth of the
-   compute.
-2. **Fix the two client cases the graph does not fit**: offer extrapolate only on WebGPU, and
+1. **Run the published search in a live session.** It is in desktop-streamer's client,
+   uncommitted. Turn on extrapolate in a room, watch a scroll and a dragged window at 60 fps,
+   and time it on a laptop iGPU - the 3090 numbers are a floor, and an Intel UHD has about a
+   fortieth of the compute.
+2. **A learned picker only if a 2-epoch smoke test earns it.** Notebook 4 bounds what choosing
+   among motions could add at ~2 dB, and nothing without the answer has found any of it.
+3. **Fix the two client cases the graph does not fit**: offer extrapolate only on WebGPU, and
    either drop the ⅔ placement when interpolate is also on or export a graph that carries a
    third of the motion for it.
-3. **Score on whole frames**, cut into the client's tiles, to see what one motion per tile does
-   to a frame that holds two motions.
 4. **Skip still tiles in the client.** The graph returns them unchanged, but still runs the
    search on them; comparing the two received tiles first would save that work, which is most
    of a desktop's tiles most of the time.

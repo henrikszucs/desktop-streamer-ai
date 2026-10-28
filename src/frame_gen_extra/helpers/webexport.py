@@ -7,6 +7,10 @@ in [0, 1], and an `output` the size of either. The few facts a graph cannot hold
 (a label, the halo, the CPU time we measured) are stored in the file's own `metadata_props`,
 as `../../upscale/helpers/webexport.py` does.
 
+A graph can take more than the two frames: `extra` names inputs of one vector per tile, as
+{name: length} - the host's `hint` (notebook 5) is {"hint": 3}. They come after the frames,
+`[N, length]` float32, and the client feeds them by name like the frames.
+
 Usage:
 
     from helpers import webexport
@@ -62,8 +66,9 @@ def describe(path):
 
 
 def export(model, filename, size, label=None, halo=TILE_HALO, batch=1, opset=17, models_dir=None,
-           dynamic=False):
-    """Write `model` as ONNX with two fixed inputs of `batch` x 3 x `size` (height, width).
+           dynamic=False, extra=None):
+    """Write `model` as ONNX with two fixed inputs of `batch` x 3 x `size` (height, width), and
+    after them one `batch` x length input per entry of `extra` ({name: length}).
 
     `size` is the model *input*: the step plus the halo on both sides. `dynamic=True` names the
     batch, height and width `N`, `H` and `W` instead, as the client's graphs are: one file for
@@ -74,23 +79,27 @@ def export(model, filename, size, label=None, halo=TILE_HALO, batch=1, opset=17,
     models_dir = Path(models_dir or MODELS_DIR)
     models_dir.mkdir(parents=True, exist_ok=True)
     path = models_dir / filename
-    example = tuple(torch.rand(batch, 3, height, width) for _ in INPUTS)
+    extra = extra or {}
+    example = (*(torch.rand(batch, 3, height, width) for _ in INPUTS),
+               *(torch.rand(batch, length) for length in extra.values()))
+    axes = {**{name: {0: "N", 2: "H", 3: "W"} for name in (*INPUTS, "output")}, **{name: {0: "N"} for name in extra}}
     torch.onnx.export(
         copy.deepcopy(model).to("cpu").eval(), example, str(path),
-        opset_version=opset, input_names=list(INPUTS), output_names=["output"],
-        dynamic_axes={name: {0: "N", 2: "H", 3: "W"} for name in (*INPUTS, "output")} if dynamic else None,
+        opset_version=opset, input_names=[*INPUTS, *extra], output_names=["output"],
+        dynamic_axes=axes if dynamic else None,
         dynamo=False,  # the classic exporter: plain op sequence, no onnxscript needed
     )
     # the exporter drops an input the model never reads (Repeat's `previous`), and the client
     # feeds both by name, so it goes back in, unused, with the other one's type
     graph = onnx.load(str(path))
     present = {value.name: value for value in graph.graph.input}
-    if len(present) < len(INPUTS):
-        inputs = [present.get(name) or copy.deepcopy(next(iter(present.values()))) for name in INPUTS]
-        for name, value in zip(INPUTS, inputs):
+    if any(name not in present for name in INPUTS):
+        frames = [present.get(name) or copy.deepcopy(present[next(n for n in INPUTS if n in present)])
+                  for name in INPUTS]
+        for name, value in zip(INPUTS, frames):
             value.name = name
         del graph.graph.input[:]
-        graph.graph.input.extend(inputs)
+        graph.graph.input.extend([*frames, *(present[name] for name in extra if name in present)])
         onnx.checker.check_model(graph)
         onnx.save(graph, str(path))
     write_metadata(path, {"label": label, "step": width - 2 * halo, "step_h": height - 2 * halo,
@@ -113,15 +122,18 @@ def session(path):
     return ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
 
 
-def run(path, previous, current):
-    """Run a graph on two (N, 3, H, W) float32 numpy arrays."""
-    return session(path).run(None, {"previous": previous, "current": current})[0]
+def run(path, previous, current, **extra):
+    """Run a graph on two (N, 3, H, W) float32 numpy arrays, and any (N, length) inputs it has
+    beyond them, by name."""
+    return session(path).run(None, {"previous": previous, "current": current, **extra})[0]
 
 
-def time_graph(path, size, batch=1, seconds=0.5):
-    """Milliseconds per run on the desktop CPU. `size` is the input (height, width)."""
+def time_graph(path, size, batch=1, seconds=0.5, extra=None):
+    """Milliseconds per run on the desktop CPU. `size` is the input (height, width); `extra`
+    the graph's other inputs as at `export`."""
     runner = session(path)
     feed = {name: np.random.rand(batch, 3, *size).astype(np.float32) for name in INPUTS}
+    feed.update({name: np.random.rand(batch, length).astype(np.float32) for name, length in (extra or {}).items()})
     for _ in range(3):
         runner.run(None, feed)
     runs, started = 0, time.perf_counter()
@@ -131,11 +143,12 @@ def time_graph(path, size, batch=1, seconds=0.5):
     return (time.perf_counter() - started) / runs * 1000
 
 
-def check_graph(path, model, previous, current, tolerance=2e-3):
+def check_graph(path, model, previous, current, tolerance=2e-3, **extra):
     """The graph must compute what the torch model computes. Returns the largest difference."""
     with torch.no_grad():
-        expected = copy.deepcopy(model).cpu().eval()(torch.from_numpy(previous), torch.from_numpy(current)).numpy()
-    difference = float(np.abs(expected - run(path, previous, current)).max())
+        expected = copy.deepcopy(model).cpu().eval()(torch.from_numpy(previous), torch.from_numpy(current),
+                                                     *(torch.from_numpy(value) for value in extra.values())).numpy()
+    difference = float(np.abs(expected - run(path, previous, current, **extra)).max())
     assert difference < tolerance, f"{Path(path).name} computes something else: {difference:.1e}"
     return difference
 
