@@ -153,6 +153,10 @@ def read_model(path):
         "label": metadata.get("label") or identifier.replace("-", " "),
         "file": path.name,
         "input": shape_in,
+        # Every input's own shape, by name. A second picture (`previous`) is the first
+        # input's shape again, but a told model's `condition` is three numbers, and a tile
+        # handed to it would be refused.
+        "inputs": {value.name: dimensions(value) for value in graph.input},
         "output": shape_out if static_out else [shape_in[0], shape_in[1],
                                                 shape_in[2] * scale, shape_in[3] * scale],
         # Read out of the graph rather than out of the filename: a half-precision export

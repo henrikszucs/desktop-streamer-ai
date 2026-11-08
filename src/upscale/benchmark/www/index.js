@@ -491,17 +491,18 @@ const selectRunnable = async function(backend) {
 
 // The input, filled once. Both paths write the same random tile; the difference is
 // whether it is a JS array handed over every run, or a buffer already in GPU memory.
-// Every input the graph declares gets a tile of its own, of the first input's shape: an
-// upscaler has one, an extrapolator two (`previous` and `current`).
+// Every input the graph declares gets a tile of its own, of the shape the graph states for
+// it: an upscaler has one, an extrapolator two (`previous` and `current`), a told upscaler
+// a picture and a `condition` of three numbers.
 const prepareInput = function(session, entry, location) {
-    const dims = entry["input"];
     const dtype = entry["dtype"] || "float32";
-    // Every dimension, batch included: the tensor is built with the whole shape, so a
-    // tile counted from three of the four is a length the constructor rejects.
-    const count = dims.reduce((total, value) => total * value, 1);
 
     const feeds = {};
     session.inputNames.forEach((name) => {
+        const dims = entry["inputs"]?.[name] ?? entry["input"];
+        // Every dimension, batch included: the tensor is built with the whole shape, so a
+        // tile counted from three of the four is a length the constructor rejects.
+        const count = dims.reduce((total, value) => total * value, 1);
         const data = makeTile(dtype, count);
         if (location !== "gpu") {
             feeds[name] = new ort.Tensor(dtype, data, dims);
