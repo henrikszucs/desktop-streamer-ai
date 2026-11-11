@@ -7,7 +7,7 @@ one arrives. Received frames N−2 and N in, the unsent frame N+1 out. Interpola
 extrapolation adds none. desktop-streamer's client already schedules it this way: an
 extrapolated frame is shown half a frame interval after the frame it came from.
 
-> **Status: fourteen notebooks on a set that is mostly real video, and a graph that passes
+> **Status: thirteen notebooks on a set that is mostly real video, and a graph that passes
 > desktop-streamer's client tests in place of its mock.**
 > `dist/frame_gen_extra/extrapolate2x_tilesearch_r4_s2.onnx` has the mock's contract exactly -
 > `previous`, `current` and `output`, each `[N, 3, H, W]` with `N`, `H`, `W` symbolic - and all 14
@@ -53,10 +53,8 @@ extrapolated frame is shown half a frame interval after the frame it came from.
 > the drawn scenes, where it carries a dragged window past its stop - for 14 times the work.
 >
 > **The rest of the gap is what happens between N and N+1, which two received frames do not
-> show.** Knowing each tile's motion to N+1 would be worth +3.2 dB (notebook 5) - a ceiling, not a
-> method: only a host capturing at twice the rate it streams could measure it, and
-> desktop-streamer's does not. History (notebook 6) and a better-measured motion (notebook 8) add +0.1 to
-> +0.2 dB, all of it on the drawn scrolls.
+> show.** History (notebook 6) and a better-measured motion (notebook 8) add +0.1 to +0.2 dB, all
+> of it on the drawn scrolls.
 
 **One notebook is one model**, as in `../upscale/`: a notebook owns its method, its numbers
 and its export cell, and publishes into `dist/frame_gen_extra/` at the repo root.
@@ -110,10 +108,6 @@ Run in order, from this folder:
 - `04_extrapolate_oracle.ipynb` — **the ceiling of choosing**: the validation clips rebuilt whole and
   cut into the client's tiles (`clips.plan`), the search per tile and per block, an oracle over
   fixed candidate motions per cell, and a picker that needs no training.
-- `05_extrapolate_hint.ipynb` — **a ceiling: the motion to N+1 known**: each tile's motion from N
-  to N+1 measured on the clean frames, scored per tile and per block, with the bits it would take
-  as a hint from the host and what late hints cost. Not a method desktop-streamer can use - its
-  host captures only the frames it sends - so its graph stays in `checkpoints/export/`.
 - `06_extrapolate_history.ipynb` — **the motion history**: each tile's search motion over the last
   three received pairs, N moved on by 17 shares of the newest motion, rules from physics and tables
   fitted on two, three and four frames. Cached in `checkpoints/history/`.
@@ -147,8 +141,7 @@ definition of a changed sample and, in `valid`, of a recorded sample a live capt
 `clips.py` rebuilds a split's whole clips from the manifest and cuts them as the client's
 `planTiles` does. `models.py` holds every method with the client's two-input contract.
 `training.py` handles loading, grouped scoring and upscale's training loop. `speed.py` is the
-timing. `show.py` draws motion for the notebooks. `hints.py` measures notebook 5's motion
-to N+1. `budget.py` labels tiles by what moved and scores notebook 7's oracles. `history.py` keeps
+timing. `show.py` draws motion for the notebooks. `budget.py` labels tiles by what moved and scores notebook 7's oracles. `history.py` keeps
 each tile's search motion over a clip. `recursive.py` is 3-D recursive search and the loop that
 runs any method over whole clips in order. `masked.py` cuts moving whole tiles and trains the
 masked network. `decide.py` gives every tile the search's measurements and the score of carrying
@@ -185,7 +178,6 @@ is left to gain, not what to build:
 | --- | --- | --- | --- |
 | repeat or carry, per tile | 13 | which of the two is closer to N+1 | +0.61 dB, moving tiles |
 | best candidate per 4x4 cell | 4 | which of repeat, the tile's motion, the block motions is closest | +2.42 dB, changed whole tiles |
-| the motion to N+1, per tile | 5 | each tile's true motion N → N+1 - as a hint, it would need a host capturing at twice the rate it streams | +3.16 dB, changed whole tiles |
 | the motion to N+1, per 16 px block | 9 | each block's true motion N → N+1 | +3.23 dB, moving tiles |
 
 ## The data
@@ -303,32 +295,6 @@ search per 4x4 cell, +0.41 choosing only repeat or the tile per tile; it is as l
 per cell the candidate that best carries N−2 onto N - is +0.30 dB over the search per 32x32 cell on
 the changed tiles, gaining on screens and video (+0.5 per 16x16) and losing on pages and photos
 (−0.4), whose content moves as one.
-
-## The ceiling: the motion to N+1 known
-
-**A ceiling, not a method.** The client never has N+1. Only a host capturing at twice the rate it
-streams has the frame between two it sends, and could measure each tile's motion on it and send
-that as a hint. desktop-streamer's host captures at the stream's rate into a single H.264 pipe:
-a hint would mean capturing twice the frames and running a motion search on the host as well, and
-a host capturing at 60 fps could as well stream 60. Notebook 5 measures what knowing the motion
-would be worth, which bounds what any motion the client works out can still gain.
-
-| changed whole tiles (3,460) | all | page | desktop | photo | screen | video |
-| --- | --- | --- | --- | --- | --- | --- |
-| repeat | 29.10 | 25.55 | 29.53 | 23.72 | 32.93 | 30.22 |
-| tile search (published) | 31.79 | 29.68 | 29.62 | 31.09 | 34.30 | 30.98 |
-| hint per tile, whole stream px | 33.91 | 35.69 | 30.69 | 32.18 | 35.08 | 32.33 |
-| **hint per tile, half px, the host's** | **34.95** | **37.97** | 30.87 | 34.81 | 35.17 | 32.70 |
-| hint per 32 px block, whole px | 35.55 | 35.96 | **35.58** | 32.81 | **36.86** | **35.13** |
-
-- **It knows when a scroll stops**: +3.16 dB over the search on the changed tiles, +8.3 on pages. On
-  a wheel-scrolled clip it averages 45.7 dB a frame, the search 41.1, repeat 42.9.
-- **On recordings one motion per tile is worth little even known exactly** (screens +0.87); per 32 px
-  block it is +2.6 on screens and +4.2 on video, at ten times the bits.
-- **Sending it would be cheap; getting it is not.** Two bytes a tile is 17 kbit/s at 1080p (per block
-  178 kbit/s), and from an eighth of the source with ±1 refinements the search finds the exhaustive
-  one's motion on 92% of the changed tiles. But it needs the second capture, and 0.74 million
-  absolute differences a tile on the host on top of it. A quarter of the hints late: still 34.12.
 
 ## Motion history
 
@@ -524,6 +490,9 @@ the mock back.
   repeat on the changed samples and +5.4 on whole tiles - its own model of the world. Scored on real
   screen recordings (that commit's notebook 11) it gained +0.37 where N+1 was a new frame. The
   notebooks of that commit hold the drawn set's results; this set replaced it.
+- **Notebook 05 was removed after commit c78a165.** It measured a motion hint the host would take
+  from N+1, the frame it does not send; desktop-streamer's host captures at the rate it streams,
+  so it never has N+1. The numbering keeps the gap.
 
 ## Open questions
 

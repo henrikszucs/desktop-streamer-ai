@@ -10,7 +10,7 @@ in [0, 1], and an `output` the size of either. The few facts a graph cannot hold
 as `../../upscale/helpers/webexport.py` does.
 
 A graph can take more than the two frames: `extra` names inputs of one vector per tile, as
-{name: length} - extrapolation's host `hint` was {"hint": 3}. They come after the frames,
+{name: length}. They come after the frames,
 `[N, length]` float32, and the client feeds them by name like the frames.
 
 Usage:

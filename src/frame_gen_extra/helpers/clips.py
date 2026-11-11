@@ -13,9 +13,7 @@ the frame is not padded: its window is slid back into the frame, and the region 
 moves inside the window instead. A frame smaller than a tile is one tile of its own size.
 
 A sample is one tile of the client's 2x generation: received frames N-2 and N in, N+1 out,
-at every `every`th received frame of a clip. With `raw`, each sample also gets the luma of the
-clean frames N and N+1 at the source's resolution - the frames before the stream's shrink and
-codec, which is what the host has when it measures a hint (notebook 5). Its score is over the region the client keeps
+at every `every`th received frame of a clip. Its score is over the region the client keeps
 from it (`boxes`), not the whole window, and `evaluate` takes the model or any function of
 (previous, current, target) - the target, for an oracle.
 """
@@ -30,17 +28,16 @@ from .training import DEVICE, to_tensor
 from .webexport import TILE_HALO, TILE_STEP
 
 
-def rebuild(source, manifest, raw=False):
-    """The decoded stream frames (T, h, w, 3) of one source, as `00_data_preprocess` made them.
-    With `raw`, (clean, stream): the frames before the stream as well, `scale` times the size."""
+def rebuild(source, manifest):
+    """The decoded stream frames (T, h, w, 3) of one source, as `00_data_preprocess` made them."""
     path = sources.RAW / source["dataset"] / source["file"]
     if source.get("scene") is None:                  # a recording: screen or video
         frames, _ = sources.load_sequence(path)
     else:
         scene = scenes.Scene(**source["scene"])
         frames = scenes.render(sources.load_image(path), scene, cursor=manifest.get("cursor_drawn", True))
-    clean, stream = degrade.degrade(frames, degrade.Degradation(**source["degradation"]))
-    return (clean, stream) if raw else stream
+    _, stream = degrade.degrade(frames, degrade.Degradation(**source["degradation"]))
+    return stream
 
 
 def plan(width, height, step=TILE_STEP, halo=TILE_HALO):
@@ -60,24 +57,17 @@ def plan(width, height, step=TILE_STEP, halo=TILE_HALO):
     return tiles, (tile_h, tile_w)
 
 
-def load(manifest, split="val", every=2, count=None, raw=False):
+def load(manifest, split="val", every=2, count=None):
     """Every client tile of a split's clips at every `every`th received frame N (N >= 2):
     {"inputs": (S, 2, h, w, 3) uint8 - frames N-2 and N - "targets": (S, h, w, 3) - N+1 -
     "boxes": (S, 4) the kept (y, x, h, w) in the window, "source", "frame", "origin": the
-    window's (x, y) in the frame}. With `raw`, "raw": (S, 2, scale h, scale w) uint8, the luma
-    of the clean frames N and N+1 under the same window. Sources whose tiles are not the
-    client's full size are left out and named in "skipped"."""
+    window's (x, y) in the frame}. Sources whose tiles are not the client's full size are left
+    out and named in "skipped"."""
     received = runs.received_every(manifest)
     full = (TILE_STEP[0] + 2 * TILE_HALO, TILE_STEP[1] + 2 * TILE_HALO)
     parts, skipped = defaultdict(list), []
     for index, source in enumerate(manifest["splits"][split]["sources"][:count]):
-        stream = rebuild(source, manifest, raw=raw)
-        if raw:
-            clean, stream = stream
-            scale = clean.shape[1] // stream.shape[1]
-            weights = metrics.RGB_TO_YUV[0].numpy()
-            clean = np.stack([(frame.astype(np.float32) @ weights).round().clip(0, 255).astype(np.uint8)
-                              for frame in clean])
+        stream = rebuild(source, manifest)
         tiles, size = plan(stream.shape[2], stream.shape[1])
         if size != full:
             skipped.append(source["file"])
@@ -93,9 +83,6 @@ def load(manifest, split="val", every=2, count=None, raw=False):
                 parts["source"].append(index)
                 parts["frame"].append(n)
                 parts["origin"].append((ix, iy))
-                if raw:
-                    parts["raw"].append(clean[[n, n + 1], scale * iy:scale * (iy + size[0]),
-                                              scale * ix:scale * (ix + size[1])])
     tiles = {key: np.asarray(value) for key, value in parts.items()}
     tiles["skipped"] = skipped
     return tiles
@@ -136,11 +123,10 @@ def groups(manifest, split, tiles):
 
 
 @torch.no_grad()
-def evaluate(model, inputs, targets, masks, boxes, batch_size=64, side=None):
+def evaluate(model, inputs, targets, masks, boxes, batch_size=64):
     """Every score in `metrics.report` per group, as `training.evaluate`, each sample scored on
-    its own `boxes` region. `model` is called as model(previous, current) - with `side`, an
-    array of one entry per sample (a hint), as model(previous, current, side) - and, if it has
-    an `oracle` attribute set, with the target last."""
+    its own `boxes` region. `model` is called as model(previous, current) - and, if it has an
+    `oracle` attribute set, with the target last."""
     if isinstance(model, torch.nn.Module):
         model.to(DEVICE).eval()
     oracle = getattr(model, "oracle", False)
@@ -150,8 +136,7 @@ def evaluate(model, inputs, targets, masks, boxes, batch_size=64, side=None):
         chunk = slice(first, first + batch_size)
         previous, current = to_tensor(inputs[chunk]).unbind(1)
         target = to_tensor(targets[chunk])
-        extra = [] if side is None else [torch.as_tensor(np.asarray(side[chunk]), device=DEVICE).float()]
-        prediction = model(previous, current, *extra, *([target] if oracle else [])).float()
+        prediction = model(previous, current, *([target] if oracle else [])).float()
         for box in {tuple(b) for b in boxes[chunk]}:
             same = torch.from_numpy((boxes[chunk] == box).all(1)).to(DEVICE)
             for name, mask in masks.items():

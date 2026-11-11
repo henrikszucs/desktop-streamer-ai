@@ -250,7 +250,7 @@ client's tests (`tests/enhance.test.js`) are the check. What the client does wit
 
 - **When did a change happen?** Worth 6.4 dB on the score and not in N and N+2 (notebook 2).
   A host that sent one bit a tile - "N+1 is as N" or "as N+2" - would carry it, but it needs
-  the frame it does not send, as extrapolation's shelved hint did. A third received frame
+  the frame it does not send, which desktop-streamer's host never captures. A third received frame
   (N−2) shows how a motion has been going, not when the next change comes - a weak lead.
 - **Ghost or late?** The mean draws a one-frame change twice at half strength; committing
   draws it once, a frame late. The scores disagree about which is better; only looking at a

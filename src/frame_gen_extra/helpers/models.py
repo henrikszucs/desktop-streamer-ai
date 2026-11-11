@@ -37,9 +37,6 @@ convolutions, one motion a tile, found by search and not learned - and from a le
 correction on top, either of which can be left out. `Gate` wraps any model with the rule a
 client can apply per tile: repeat where nothing moved.
 
-With the host's help (notebook 5): `Hinted` moves `current` by a motion the host measured on
-the frame it did not send, and falls back to a search where that hint came late.
-
 Where the search is unsure (notebook 10): `Masked` adds a `TwoScale` network's correction to
 the search's N+1, through a gate opened by how much of the change the search's motion leaves
 unexplained.
@@ -321,8 +318,7 @@ class PyramidSearch(nn.Module):
 
     The last level ends with `subpixel`: "softmax" weighs its offsets as `TileSearch` does;
     "parabola" fits one through the cost of the cheapest offset and its two neighbours on each
-    axis - the vertex of the fit, at most half a pixel from it - as the host's measurement
-    does (notebook 5); "equiangular" fits two lines of one slope instead, the shape a mean
+    axis - the vertex of the fit, at most half a pixel from it; "equiangular" fits two lines of one slope instead, the shape a mean
     absolute difference has near its minimum; "none" takes the cheapest whole offset. `fraction` and `still` are
     `TileSearch`'s: the share carried to N+1, and the gate on the first level's cost of no
     motion. Each level moves only the luma of `previous`, at its own resolution. Every level's
@@ -545,28 +541,6 @@ class Masked(nn.Module):
     def forward(self, previous, current):
         found = self.parts(previous, current)
         return found["search"] + found["gate"] * found["correction"]
-
-
-class Hinted(nn.Module):
-    """`current` moved by the motion the host measured, where it sent one in time, and by
-    `search` where it did not (notebook 5).
-
-    The host captures the frame it does not send, so it can measure the motion from N to N+1
-    that the client can only guess. `hint` is (N, 3) per tile: that motion (x, y) in stream
-    pixels, and 1 if it arrived in time or 0 if not - then the tile falls back to `search`, a
-    `TileSearch` carrying its share of the motion between the received frames. One graph does
-    both, so the client never has to choose which to run.
-    """
-
-    def __init__(self, search):
-        super().__init__()
-        self.search = search
-
-    def forward(self, previous, current, hint):
-        found = self.search(previous, current)                     # (N, 2, 1, 1): read from
-        sent = hint[:, 2:3, None, None]
-        offsets = sent * -hint[:, :2, None, None] + (1 - sent) * found
-        return warp(current, offsets.expand(-1, -1, *current.shape[-2:]))
 
 
 def warp(picture, offsets, mode="bilinear"):
