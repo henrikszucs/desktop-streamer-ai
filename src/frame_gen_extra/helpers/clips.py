@@ -34,7 +34,7 @@ def rebuild(source, manifest, raw=False):
     """The decoded stream frames (T, h, w, 3) of one source, as `00_data_preprocess` made them.
     With `raw`, (clean, stream): the frames before the stream as well, `scale` times the size."""
     path = sources.RAW / source["dataset"] / source["file"]
-    if source["kind"] == "video":
+    if source.get("scene") is None:                  # a recording: screen or video
         frames, _ = sources.load_sequence(path)
     else:
         scene = scenes.Scene(**source["scene"])
@@ -83,6 +83,8 @@ def load(manifest, split="val", every=2, count=None, raw=False):
             skipped.append(source["file"])
             continue
         for n in range(received, len(stream) - 1, received * every):
+            if not runs.valid(source, n, received):
+                continue
             for ix, iy, ox, oy, w, h in tiles:
                 window = stream[:, iy:iy + size[0], ix:ix + size[1]]
                 parts["inputs"].append(window[[n - received, n]])

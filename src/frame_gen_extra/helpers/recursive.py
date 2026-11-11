@@ -330,7 +330,7 @@ def load(manifest, split, fields, pictures, published, tile_search, still=0.1, s
                 found[name] = (clip.track(method), method.block, method.project)
         moving = torch.as_tensor(clip.still >= still, device=DEVICE)
         chosen_tiles = [(p, t) for p in range(start - 1, len(clip.ends)) if clip.ends[p] + 1 < len(clip.stream)
-                        for t in range(len(clip.layout))]
+                        and runs.valid(source, clip.ends[p], clip.received) for t in range(len(clip.layout))]
         for first in range(0, len(chosen_tiles), batch_size):
             batch = chosen_tiles[first:first + batch_size]
             pairs = [p for p, _ in batch]
@@ -376,7 +376,7 @@ def load(manifest, split, fields, pictures, published, tile_search, still=0.1, s
             "error": {name: np.concatenate(value) for name, value in error.items()}}
 
 
-FAMILIES = ("whole tile moves", "part of the tile moves", "unannounced", "video", "other")
+FAMILIES = ("whole tile moves", "part of the tile moves", "unannounced", "screen", "video", "other")
 
 
 def family(label):
@@ -387,4 +387,4 @@ def family(label):
         return "part of the tile moves"
     if label == "menu opens or closes at N+1" or label.endswith(": starts"):
         return "unannounced"
-    return "video" if label == "video" else "other"
+    return label if label in ("screen", "video") else "other"

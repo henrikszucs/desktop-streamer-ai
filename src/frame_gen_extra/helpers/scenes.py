@@ -31,7 +31,10 @@ fractional.
 Every speed and duration here is per frame at `BASE_FPS` (30), the rate it was tuned at. A
 clip at another rate (`fps=60` for 2x frame generation) is drawn on that time line and then
 read at its own frame times - the same motion in pixels per second, so half as far a frame at
-60 fps, and a menu that opens at the same moment.
+60 fps, and a menu that opens at the same moment. The reading starts at a random phase: read
+from the first 30 fps frame, every change of speed, every stop and every menu would land on an
+even frame - a received one - and the frame between two received ones would always lie exactly
+halfway between them, which a real screen does not promise.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -233,10 +236,12 @@ def sample(rng, size, kind, frames=30, window=WINDOW, cursor_scale=None, fps=BAS
     or "photo", `frames` long at `fps`."""
     if fps == BASE_FPS:
         return _sample(rng, size, kind, frames, window, cursor_scale)
-    # drawn at the base rate over the same span of time, then read at this rate's frame times
+    # drawn at the base rate over the same span of time, then read at this rate's frame times,
+    # from a random phase: whole base frames land on even or on odd frames of this rate
     rate = fps / BASE_FPS
-    base = _sample(rng, size, kind, int(np.ceil((frames - 1) / rate)) + 1, window, cursor_scale)
-    times = np.arange(frames) / rate
+    phase = int(rng.integers(0, max(1, int(round(rate)))))
+    base = _sample(rng, size, kind, int(np.ceil((frames - 1 + phase) / rate)) + 1, window, cursor_scale)
+    times = (np.arange(frames) + phase) / rate
     scene = Scene(kind=base.kind, window=base.window, frames=frames, origin=base.origin,
                   background=base.background, scroll=_retime(base.scroll, times),
                   cursor_scale=base.cursor_scale)
@@ -248,7 +253,8 @@ def sample(rng, size, kind, frames=30, window=WINDOW, cursor_scale=None, fps=BAS
         scene.drag = {"source": base.drag["source"], "at": _retime(base.drag["at"], times)}
     if base.popup:
         first, end = base.popup["frames"]
-        scene.popup = {**base.popup, "frames": (int(round(first * rate)), min(frames, int(round(end * rate))))}
+        scene.popup = {**base.popup, "frames": (max(0, int(round(first * rate)) - phase),
+                                                min(frames, int(round(end * rate)) - phase))}
     return scene
 
 

@@ -39,7 +39,7 @@ LABELS = ("menu opens or closes at N+1", "menu opened or closed before N",
           "drag: starts", "drag: stops", "drag: changes speed", "drag: goes on",
           "region: starts", "region: stops", "region: changes speed", "region: goes on",
           "scroll: starts", "scroll: stops", "scroll: changes speed", "scroll: goes on",
-          "video", "nothing recorded")
+          "screen", "video", "nothing recorded")
 
 
 def _state(before, now, after):
@@ -67,7 +67,8 @@ def events(source, n, step, rect):
     received frames N-2 (= n - step) and N (= n) and the generated N+1."""
     scene = source.get("scene")
     if not scene:
-        return ["video"] if source["kind"] == "video" else ["nothing recorded"]
+        # a recording: nothing is recorded of what moved in it, only what it is
+        return [source["kind"]] if source["kind"] in ("screen", "video") else ["nothing recorded"]
     times = (n - step, n, n + 1)
     found = []
     popup = scene.get("popup")
@@ -190,7 +191,7 @@ def load(manifest, split, search, every=1, depth=1, count=None, batch_size=24):
         if size != TILE_INPUT:
             continue
         chosen = [(n, t) for n in range(max(depth, 1) * received, len(stream) - 1, received * every)
-                  for t in range(len(layout))]
+                  if runs.valid(source, n, received) for t in range(len(layout))]
         for first in range(0, len(chosen), batch_size):
             batch = chosen[first:first + batch_size]
             windows = np.stack([stream[[n - received, n, n + 1], layout[t][1]:layout[t][1] + size[0],

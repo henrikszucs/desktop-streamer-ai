@@ -49,6 +49,31 @@ def changed_share(a, b, level=CHANGED_LEVEL):
     return (np.abs(difference) > level).mean(axis=(-2, -1))
 
 
+# A recorded video repeats frames where its recorder captured slower than its frame rate: a
+# 30 fps upload of a 15 fps screen capture shows every frame twice. A live capture does not, so
+# a sample whose frames repeat is not one the client would see - N+1 a copy of N makes repeat
+# exact by construction. Each recorded source keeps `steps`, the mean |luma change| between its
+# consecutive source frames, and `valid` keeps a received frame N only where the frames around it
+# all change (the content moves and every frame is new) or none does (the content is still).
+STEP_LEVEL = 0.25        # mean |luma change| under this between two source frames: the same frame again
+
+
+def raw_steps(frames):
+    """The mean |luma change| between consecutive frames of uint8 (T, H, W, 3) source frames."""
+    luma = np.asarray(frames, dtype=np.float32) @ LUMA
+    return [round(float(v), 4) for v in np.abs(np.diff(luma, axis=0)).mean(axis=(1, 2))]
+
+
+def valid(source, n, received):
+    """Whether received frame `n` of a source makes a sample: always for a drawn clip; for a
+    recording, only if the steps from N-`received` to N+2 all change or none does."""
+    steps = source.get("steps")
+    if steps is None:
+        return True
+    window = [step > STEP_LEVEL for step in steps[max(0, n - received):n + 2]]
+    return all(window) or not any(window)
+
+
 def _frames(directory, split, manifest):
     """A split's runs, memory mapped (read from disk only when used)."""
     return np.load(directory / manifest["splits"][split]["frames"], mmap_mode="r")

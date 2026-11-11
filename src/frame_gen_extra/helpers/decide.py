@@ -86,7 +86,8 @@ def load(manifest, split, search, start=1, chosen=None, batch_size=64, progress=
         degradation = source["degradation"]
         bpp = degradation["bpp"] if degradation["bpp"] is not None else 2.0
         deblock = float(bool(degradation.get("deblock")))
-        chosen_tiles = [(n, t) for n in range(start * received, len(stream) - 1, received) for t in range(len(layout))]
+        chosen_tiles = [(n, t) for n in range(start * received, len(stream) - 1, received)
+                        if runs.valid(source, n, received) for t in range(len(layout))]
         for first in range(0, len(chosen_tiles), batch_size):
             batch = chosen_tiles[first:first + batch_size]
             windows = np.stack([stream[[n - received, n, n + 1], layout[t][1]:layout[t][1] + size[0],

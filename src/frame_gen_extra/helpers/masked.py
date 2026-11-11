@@ -45,8 +45,8 @@ def build(manifest, split, published, per_clip, seed=0, path=None, count=None):
             continue
         _, still, _ = history.pairs(stream, published, layout, size, received)
         ends = list(range(received, len(stream), received))
-        options = [(p, t) for p, n in enumerate(ends) if n + 1 < len(stream) for t in range(len(layout))
-                   if still[p, t] >= published.still]
+        options = [(p, t) for p, n in enumerate(ends) if n + 1 < len(stream) and runs.valid(source, n, received)
+                   for t in range(len(layout)) if still[p, t] >= published.still]
         for k in sorted(rng.choice(len(options), min(per_clip, len(options)), replace=False)):
             p, t = options[k]
             n = ends[p]

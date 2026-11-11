@@ -95,7 +95,7 @@ def load_many(manifest, split, searches, depth=3, every=1, grid=GRID, count=None
             continue
         measured = {name: pairs(stream, search, layout, size, received) for name, search in searches.items()}
         chosen = [(n, t) for n in range(depth * received, len(stream) - 1, received * every)
-                  for t in range(len(layout))]
+                  if runs.valid(source, n, received) for t in range(len(layout))]
         for first in range(0, len(chosen), batch_size):
             batch = chosen[first:first + batch_size]
             windows = np.stack([stream[[n - received, n, n + 1], layout[t][1]:layout[t][1] + size[0],
