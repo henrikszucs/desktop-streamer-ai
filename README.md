@@ -21,8 +21,8 @@ below):
 | Folder | Problem | State |
 | --- | --- | --- |
 | [`src/upscale/`](src/upscale/summary.md) | more pixels out than in | fifteen notebooks: static baselines, nine ways to build a model, host hints, and the bits-against-compute trade-off; nothing shipped to the client yet |
-| [`src/frame_gen_intra/`](src/frame_gen_intra/summary.md) | interpolate between two frames | not started |
-| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | 2x frame generation without latency: the frame between two received ones, made before the next arrives | six notebooks: 60 fps runs of desktop-like motion, static baselines, two trained networks that hedge, and a tile search built from fixed convolutions (+11.1 dB over repeating the frame on 80 px samples, +5.8 on whole frames in the client's tiles, 2.3 ms a 1080p frame in Chrome's WebGPU) that passes desktop-streamer's client tests in place of its mock; an oracle bounds what a learned picker could add at ~2 dB; a motion hint from the host would add +6.0 dB but needs a host capturing at twice the stream's rate, and is shelved |
+| [`src/frame_gen_intra/`](src/frame_gen_intra/summary.md) | 2x frame generation by interpolation: the unsent frame between two received ones, shown half an interval late | two notebooks: extrapolation's 60 fps runs read as (N, N+2) → N+1, static baselines, and extrapolation's tile search made two-sided (+10.6 dB over holding N and +9.3 over the mock's mean on 80 px samples, as a graph with the client's contract), with a per-pixel pick between it and the mean that adds little; a network on top of the search never beats it - what is left (6.4 dB to an oracle) is which frame a one-frame change belongs to, which two frames do not show; not yet timed in the browser or run in the client |
+| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | 2x frame generation without latency: the frame between two received ones, made before the next arrives | nine notebooks: 60 fps runs of desktop-like motion, static baselines, two trained networks that hedge, and a tile search built from fixed convolutions (+11.1 dB over repeating the frame on 80 px samples, +5.8 on whole frames in the client's tiles, 2.3 ms a 1080p frame in Chrome's WebGPU) that passes desktop-streamer's client tests in place of its mock; an oracle bounds what a learned picker could add at ~2 dB; a motion hint from the host would add +6.0 dB but needs a host capturing at twice the stream's rate, and is shelved; two more received frames of motion history add +0.3 dB; an error budget by scene event finds much of the search's error is measuring the motion wrong (half a pixel, or past its ±8 px reach), and a network's place in tiles that move only in part; a coarse-to-fine sub-pixel search carrying whole pixels, with a stop decision on its motion history, adds +0.8 dB with no training |
 
 ## The mock graphs the client runs
 
@@ -171,7 +171,7 @@ Then open <http://127.0.0.1:8000>. Options:
 | --- | --- | --- |
 | `-p`, `--port` | `8000` | |
 | `--host` | `127.0.0.1` | `0.0.0.0` to measure from another machine on the network |
-| `--models` | `dist/upscale/` | another folder of graphs - `dist/frame_gen_extra/` for the extrapolators, whose two inputs (`previous`, `current`) the page fills like the one an upscaler has |
+| `--models` | `dist/upscale/` | another folder of graphs - `dist/frame_gen_extra/` or `dist/frame_gen_intra/` for the frame generators, whose two inputs (`previous`, `current`) the page fills like the one an upscaler has |
 | `--results` | none | append every measurement the page posts to this file, one JSON line each |
 
 Opened as `/?auto=<id>,<id>,...` (or `?auto=all`), with `backend`, `data`, `mode` and `seconds`
@@ -254,10 +254,17 @@ desktop-streamer-ai/
 │   │   ├── screens/            what screens.py draws, train/ and test/, and screens.json
 │   │   └── captures/           screenshots of your own
 │   ├── upscale/                00_data_preprocess.ipynb's patch pairs, manifest.json, synthetic/
-│   └── frame_gen_extra/        its 00_data_preprocess.ipynb's 60 fps frame runs, manifest.json, synthetic/
+│   ├── frame_gen_extra/        its 00_data_preprocess.ipynb's 60 fps frame runs, manifest.json, synthetic/
+│   └── frame_gen_intra/        the same runs, written by its own 00_data_preprocess.ipynb
 ├── src/                        the source: code, notebooks, and what training leaves behind
 │   ├── mock/                   make_mock_models.py, the three stand-in graphs the client runs
-│   ├── frame_gen_intra/        summary.md only, nothing built yet
+│   ├── frame_gen_intra/        frame_gen_extra's layout, three notebooks in
+│   │   ├── summary.md                the problem, the data, the baselines
+│   │   ├── 00_data_preprocess.ipynb  frame_gen_extra's runs, written to datasets/frame_gen_intra/
+│   │   ├── 01_interpolate_dummy.ipynb  hold, the mean, motion shifts and the tile search two-sided: the bar to beat
+│   │   ├── 02_interpolate_refine.ipynb  a network on top of the search, the oracle, and committing to one frame
+│   │   └── helpers/                  frame_gen_extra's, runs.py turned round to (N, N+2) → N+1,
+│   │                                 models.py for interpolators, webexport.py into dist/frame_gen_intra/
 │   ├── frame_gen_extra/        the upscale layout, six notebooks in
 │   │   ├── summary.md                the problem, the data, the baselines
 │   │   ├── 00_data_preprocess.ipynb  still screens animated at 60 fps as a desktop in use, streamed, cut into runs
@@ -307,5 +314,6 @@ desktop-streamer-ai/
 │           └── www/                the page
 └── dist/                       committed — the finished models, where every export lands
     ├── upscale/                *.onnx, served to the page as models/
-    └── frame_gen_extra/        *.onnx with extrapolate.onnx's two-input contract; extrapolate2x_tilesearch_r4_s2.onnx is the client's
+    ├── frame_gen_extra/        *.onnx with extrapolate.onnx's two-input contract; extrapolate2x_tilesearch_r4_s2.onnx is the client's
+    └── frame_gen_intra/        *.onnx with interpolate.onnx's contract; interpolate2x_tilesearch_r4_s2.onnx and _tilepick_ for the client
 ```
