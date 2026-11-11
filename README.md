@@ -12,7 +12,7 @@ nothing else. Beside them, **`datasets/`** holds the data, never committed: the 
 benchmarks every problem can draw on in `datasets/raw/`, downloaded by
 [`datasets/download.py`](datasets/download.py) - and desktop screens, drawn by
 [`datasets/screens.py`](datasets/screens.py) - and beside it one folder per problem for what
-that problem's preprocessing makes of them (`datasets/upscale/`, `datasets/frame_gen_extra/`).
+that problem's preprocessing makes of them (`datasets/upscale/`, `datasets/frame_gen_extra/`, `datasets/frame_gen_intra/`).
 
 Three problems, one folder each under `src/`, each with its own `summary.md` - and beside
 them `src/mock/`, which is not a problem but the three stand-ins the client runs today (see
@@ -21,8 +21,8 @@ below):
 | Folder | Problem | State |
 | --- | --- | --- |
 | [`src/upscale/`](src/upscale/summary.md) | more pixels out than in | fifteen notebooks: static baselines, nine ways to build a model, host hints, and the bits-against-compute trade-off; nothing shipped to the client yet |
-| [`src/frame_gen_intra/`](src/frame_gen_intra/summary.md) | 2x frame generation by interpolation: the unsent frame between two received ones, shown half an interval late | two notebooks: extrapolation's 60 fps runs read as (N, N+2) → N+1, static baselines, and extrapolation's tile search made two-sided (+10.6 dB over holding N and +9.3 over the mock's mean on 80 px samples, as a graph with the client's contract), with a per-pixel pick between it and the mean that adds little; a network on top of the search never beats it - what is left (6.4 dB to an oracle) is which frame a one-frame change belongs to, which two frames do not show; not yet timed in the browser or run in the client |
-| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | 2x frame generation without latency: the frame between two received ones, made before the next arrives | nine notebooks: 60 fps runs of desktop-like motion, static baselines, two trained networks that hedge, and a tile search built from fixed convolutions (+11.1 dB over repeating the frame on 80 px samples, +5.8 on whole frames in the client's tiles, 2.3 ms a 1080p frame in Chrome's WebGPU) that passes desktop-streamer's client tests in place of its mock; an oracle bounds what a learned picker could add at ~2 dB; a motion hint from the host would add +6.0 dB but needs a host capturing at twice the stream's rate, and is shelved; two more received frames of motion history add +0.3 dB; an error budget by scene event finds much of the search's error is measuring the motion wrong (half a pixel, or past its ±8 px reach), and a network's place in tiles that move only in part; a coarse-to-fine sub-pixel search carrying whole pixels, with a stop decision on its motion history, adds +0.8 dB with no training |
+| [`src/frame_gen_intra/`](src/frame_gen_intra/summary.md) | 2x frame generation by interpolation: the unsent frame between two received ones, shown half an interval late | two notebooks: extrapolation's first 60 fps run set read as (N, N+2) → N+1, static baselines, and extrapolation's tile search made two-sided (+10.6 dB over holding N and +9.3 over the mock's mean on 80 px samples, as a graph with the client's contract), with a per-pixel pick between it and the mean that adds little; a network on top of the search never beats it - what is left (6.4 dB to an oracle) is which frame a one-frame change belongs to, which two frames do not show; not yet timed in the browser or run in the client |
+| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | 2x frame generation without latency: the frame between two received ones, made before the next arrives | fourteen notebooks on a run set two thirds recorded (YouTube-8M screen captures and 50-60 fps video, beside drawn desktop scenes): static baselines, networks that hedge, and a tile search built from fixed convolutions (+3.6 dB over repeating the frame on changed 80 px samples, +2.7 on whole client tiles - +7.4 on photos, +1.4 on screens, +0.8 on video - 2.3 ms a 1080p frame in Chrome's WebGPU) that passes desktop-streamer's client tests in place of its mock, which scores 4.1 dB below repeating; on a real screen most of what changes is not motion, and even the true motion per block takes back only a third of the search's error; no network that draws pixels or motion beats the search - one behind its confidence mask adds +0.06 dB, 3-D recursive search per block +0.03, each at 14 times the work; a learned per-tile choice to carry the motion or repeat adds +0.22 dB on moving tiles; a motion hint from the host would add +3.2 dB but needs a host capturing at twice the stream's rate, and is shelved |
 
 ## The mock graphs the client runs
 
@@ -254,29 +254,40 @@ desktop-streamer-ai/
 │   │   ├── screens/            what screens.py draws, train/ and test/, and screens.json
 │   │   └── captures/           screenshots of your own
 │   ├── upscale/                00_data_preprocess.ipynb's patch pairs, manifest.json, synthetic/
-│   ├── frame_gen_extra/        its 00_data_preprocess.ipynb's 60 fps frame runs, manifest.json, synthetic/
-│   └── frame_gen_intra/        the same runs, written by its own 00_data_preprocess.ipynb
+│   ├── frame_gen_extra/        its 00_data_preprocess.ipynb's frame runs, recorded and drawn, manifest.json,
+│   │                           synthetic/; notebook 10's whole tiles; _synthetic_v1/, the first set
+│   └── frame_gen_intra/        runs from frame_gen_extra's first recipe, written by its own 00_data_preprocess.ipynb
 ├── src/                        the source: code, notebooks, and what training leaves behind
 │   ├── mock/                   make_mock_models.py, the three stand-in graphs the client runs
 │   ├── frame_gen_intra/        frame_gen_extra's layout, three notebooks in
 │   │   ├── summary.md                the problem, the data, the baselines
-│   │   ├── 00_data_preprocess.ipynb  frame_gen_extra's runs, written to datasets/frame_gen_intra/
+│   │   ├── 00_data_preprocess.ipynb  frame_gen_extra's first run set, written to datasets/frame_gen_intra/
 │   │   ├── 01_interpolate_dummy.ipynb  hold, the mean, motion shifts and the tile search two-sided: the bar to beat
 │   │   ├── 02_interpolate_refine.ipynb  a network on top of the search, the oracle, and committing to one frame
 │   │   └── helpers/                  frame_gen_extra's, runs.py turned round to (N, N+2) → N+1,
 │   │                                 models.py for interpolators, webexport.py into dist/frame_gen_intra/
-│   ├── frame_gen_extra/        the upscale layout, six notebooks in
+│   ├── frame_gen_extra/        the upscale layout, fourteen notebooks in
 │   │   ├── summary.md                the problem, the data, the baselines
-│   │   ├── 00_data_preprocess.ipynb  still screens animated at 60 fps as a desktop in use, streamed, cut into runs
+│   │   ├── 00_data_preprocess.ipynb  screen captures, video, and still screens animated as a desktop in use, streamed, cut into runs
 │   │   ├── 01_extrapolate_dummy.ipynb  repeat, linear and motion-shift extrapolation: the bar to beat
 │   │   ├── 02_extrapolate_twoscale.ipynb  current + a correction made at 1/2 and 1/4 resolution, and its control
 │   │   ├── 03_extrapolate_motion.ipynb  motion instead of pixels: a learned head, a tile search, and both
 │   │   ├── 04_extrapolate_oracle.ipynb  whole frames in the client's tiles, and the most a learned picker could add
 │   │   ├── 05_extrapolate_hint.ipynb  the host's motion hint for the frame it does not send - shelved: no host captures it
+│   │   ├── 06_extrapolate_history.ipynb  each tile's motion over the last three received pairs
+│   │   ├── 07_extrapolate_budget.ipynb  where the search's error comes from, by scene event and kind
+│   │   ├── 08_extrapolate_pyramid.ipynb  the motion measured coarse to fine and sub-pixel, with a stop decision
+│   │   ├── 09_extrapolate_recursive.ipynb  3-D recursive search: a motion per block, as a TV finds it
+│   │   ├── 10_extrapolate_masked.ipynb  a network where the search is unsure, behind its confidence mask
+│   │   ├── 11_extrapolate_recorded.ipynb  real against drawn: scores by kind, and how much of a change is motion
+│   │   ├── 12_extrapolate_masked_real.ipynb  the masked network trained on drawn tiles, recorded, or both
+│   │   ├── 13_extrapolate_decide.ipynb  carry the motion or repeat, decided per tile by a small trained model
 │   │   └── helpers/                  sources, degrade, metrics copied from upscale; scenes.py (the
-│   │                                 desktop motion), runs.py, clips.py (whole frames, cut as the client
-│   │                                 cuts them), models.py, training.py, speed.py, show.py (motion
-│   │                                 pictures), hints.py (the host's hint), webexport.py
+│   │                                 desktop motion), recorded.py (the screen captures picked), runs.py,
+│   │                                 clips.py (whole frames, cut as the client cuts them), models.py,
+│   │                                 training.py, speed.py, show.py (motion pictures), hints.py (the
+│   │                                 host's hint), history.py, budget.py, recursive.py, masked.py,
+│   │                                 decide.py, webexport.py
 │   └── upscale/
 │       ├── summary.md                the models, the numbers, and what they do not say
 │       ├── 00_data_preprocess.ipynb  frames → LR/HR patch clips, a halo around the LR side
