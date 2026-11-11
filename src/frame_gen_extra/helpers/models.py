@@ -39,6 +39,10 @@ client can apply per tile: repeat where nothing moved.
 
 With the host's help (notebook 5): `Hinted` moves `current` by a motion the host measured on
 the frame it did not send, and falls back to a search where that hint came late.
+
+Where the search is unsure (notebook 10): `Masked` adds a `TwoScale` network's correction to
+the search's N+1, through a gate opened by how much of the change the search's motion leaves
+unexplained.
 """
 
 import torch
@@ -143,12 +147,12 @@ class TwoScale(nn.Module):
     multiple of 2 ** len(widths).
     """
 
-    def __init__(self, widths=(16, 32), blocks=3, slope=0.1):
+    def __init__(self, widths=(16, 32), blocks=3, slope=0.1, inputs=6):
         super().__init__()
         self.widths, self.blocks = tuple(widths), blocks
         act = nn.LeakyReLU(slope)
         self.down = nn.ModuleList()
-        channels = 6
+        channels = inputs
         for width in self.widths:
             self.down.append(nn.Sequential(nn.Conv2d(channels, width, 3, stride=2, padding=1), act))
             channels = width
@@ -167,8 +171,8 @@ class TwoScale(nn.Module):
             channels = out
         self.shuffle = nn.PixelShuffle(2)
 
-    def forward(self, previous, current):
-        x = torch.cat([previous, current], dim=1)
+    def correction(self, x):
+        """(N, 3, H, W): what the network adds, from its stacked inputs `x`."""
         skips = []
         for down in self.down:
             x = down(x)
@@ -177,7 +181,10 @@ class TwoScale(nn.Module):
         skips.pop()   # the deepest level is the body's own input
         for up in self.up:
             x = up(torch.cat([self.shuffle(x), skips.pop()], dim=1))
-        return current + self.shuffle(x)
+        return self.shuffle(x)
+
+    def forward(self, previous, current):
+        return current + self.correction(torch.cat([previous, current], dim=1))
 
 
 class Plain(nn.Module):
@@ -250,7 +257,11 @@ class TileSearch(nn.Module):
     def difference(self, previous, current):
         """(N, offsets, h, w): |current - previous moved by d| at every position the search
         samples - 1/`scale` of the resolution, every `stride`th, `radius` in from each edge."""
-        return (self.centre(self.luma(current)) - self.moved(self.luma(previous))).abs()
+        return self.compare(self.luma(previous), self.luma(current))
+
+    def compare(self, previous, current):
+        """`difference` for luma already at 1/`scale` of the resolution, (N, 1, h, w) each."""
+        return (self.centre(current) - self.moved(previous)).abs()
 
     def choose(self, cost):
         """The motion (N, 2) that costs (N, offsets) in luma levels pick, gated by `still`."""
@@ -272,6 +283,15 @@ class TileSearch(nn.Module):
         """(N, offsets): the tile's cost of every offset, in luma levels."""
         return 255.0 * self.difference(previous, current).mean(dim=(2, 3))
 
+    def measure(self, previous, current):
+        """(motion (N, 2), still (N,), best (N,)): the whole motion from `previous` to
+        `current` - how far the content moved, (x, y) in pixels, whatever `fraction` and
+        ungated - the cost of no motion, and the least cost, in luma levels."""
+        cost = self.costs(previous, current)
+        weights = torch.softmax(-self.sharpness * cost, dim=1)
+        motion = -(weights @ self.table) / self.fraction
+        return motion, cost[:, self.no_motion], cost.min(1).values
+
     def blocks(self, previous, current, block):
         """(N, 2, H, W): one motion per `block` x `block` pixels instead of one per tile - the same
         costs, averaged over each block, each block choosing (and gated) on its own. The ring the
@@ -287,6 +307,96 @@ class TileSearch(nn.Module):
         y = ((torch.arange(height, device=current.device) - margin) // block).clamp(0, rows - 1)
         x = ((torch.arange(width, device=current.device) - margin) // block).clamp(0, cols - 1)
         return motion[:, :, y][:, :, :, x]
+
+
+class PyramidSearch(nn.Module):
+    """`TileSearch` coarse to fine: one motion a tile, found further and finer for about the
+    same work (notebook 8).
+
+    `levels` is a list of (scale, radius, stride). The first searches every offset within
+    `radius` at 1/`scale` of the resolution, as `TileSearch` does - (4, 4, 1) reaches ±16
+    stream pixels at a quarter of the published search's positions. Each next level moves
+    `previous` by the motion found so far (`warp`, `GridSample`) and searches only what is
+    left, ±`radius` at its own scale: a few offsets at half and at full resolution.
+
+    The last level ends with `subpixel`: "softmax" weighs its offsets as `TileSearch` does;
+    "parabola" fits one through the cost of the cheapest offset and its two neighbours on each
+    axis - the vertex of the fit, at most half a pixel from it - as the host's measurement
+    does (notebook 5); "equiangular" fits two lines of one slope instead, the shape a mean
+    absolute difference has near its minimum; "none" takes the cheapest whole offset. `fraction` and `still` are
+    `TileSearch`'s: the share carried to N+1, and the gate on the first level's cost of no
+    motion. Each level moves only the luma of `previous`, at its own resolution. Every level's
+    operators are `TileSearch`'s, plus `GridSample` and a few elementwise ones; the sub-pixel
+    fits add `ArgMin` and `Gather`.
+
+    What is carried to N+1 need not be as fine as what is measured: `whole` rounds the carried
+    offset to whole pixels, so N is copied, never resampled - a decoded frame read between its
+    pixels is blurred, bilinearly or bicubically, more than half a pixel of position is worth
+    (notebook 8). `interpolation` is the warp's mode otherwise.
+    """
+
+    def __init__(self, levels=((4, 4, 1), (2, 1, 2), (1, 2, 4)), sharpness=10.0, fraction=1.0, still=None,
+                 subpixel="softmax", whole=False, interpolation="bilinear"):
+        super().__init__()
+        self.levels, self.sharpness, self.fraction, self.still = tuple(levels), sharpness, fraction, still
+        self.subpixel, self.whole, self.interpolation = subpixel, whole, interpolation
+        self.searches = nn.ModuleList([TileSearch(radius, scale, sharpness, stride) for scale, radius, stride in levels])
+
+    def _step(self, search, cost, last):
+        """(N, 2): the motion a level's costs give, in full-resolution pixels."""
+        if not last or self.subpixel == "softmax":
+            return -(torch.softmax(-self.sharpness * cost, dim=1) @ search.table)
+        size = 2 * search.radius + 1
+        best = cost.argmin(1)
+        dy, dx = best // size - search.radius, best % size - search.radius
+        whole = torch.stack([dx, dy], 1).to(cost.dtype)
+        if self.subpixel == "none":
+            return search.scale * whole
+
+        def vertex(lower, upper, centre, inside):
+            # no step where the cheapest offset is on the searched square's edge: one neighbour is missing
+            if self.subpixel == "parabola":
+                curve = lower - 2 * centre + upper
+            else:   # "equiangular": two lines of one slope through the three, the steeper side's
+                curve = 2 * (torch.maximum(lower, upper) - centre)
+            step = (lower - upper) / (2 * curve.clamp_min(1e-6)) if self.subpixel == "parabola" \
+                else (lower - upper) / curve.clamp_min(1e-6)
+            return torch.where(inside & (curve > 1e-6), step.clamp(-0.5, 0.5), torch.zeros_like(step))
+
+        def at(oy, ox):
+            y = (dy + oy).clamp(-search.radius, search.radius) + search.radius
+            x = (dx + ox).clamp(-search.radius, search.radius) + search.radius
+            return cost.gather(1, (y * size + x)[:, None])[:, 0]
+
+        centre = at(0, 0)
+        fine = torch.stack([vertex(at(0, -1), at(0, 1), centre, dx.abs() < search.radius),
+                            vertex(at(-1, 0), at(1, 0), centre, dy.abs() < search.radius)], 1)
+        return search.scale * (whole + fine)
+
+    def measure(self, previous, current):
+        """As `TileSearch.measure`: (motion (N, 2), still (N,), best (N,))."""
+        motion = current[:, :2, 0, 0] * 0               # a zero per tile that keeps N symbolic in a graph
+        for i, search in enumerate(self.searches):
+            before, now = search.luma(previous), search.luma(current)
+            if i:
+                # the luma of N-2 moved by the motion found so far, in this level's pixels
+                shift = (-motion / search.scale)[:, :, None, None].expand(-1, -1, *before.shape[-2:])
+                before = warp(before, shift)
+            cost = 255.0 * search.compare(before, now).mean(dim=(2, 3))
+            if i == 0:
+                still = cost[:, search.no_motion]
+            motion = motion + self._step(search, cost, i == len(self.searches) - 1)
+        return motion, still, cost.min(1).values
+
+    def forward(self, previous, current):
+        """(N, 2, 1, 1): the (x, y) offset every pixel of the tile is read from, as `TileSearch`'s."""
+        motion, still, _ = self.measure(previous, current)
+        offsets = -self.fraction * motion
+        if self.whole:
+            offsets = torch.round(offsets)
+        if self.still is not None:
+            offsets = offsets * (still >= self.still).to(offsets.dtype)[:, None]
+        return offsets[:, :, None, None]
 
 
 class Motion(nn.Module):
@@ -358,7 +468,7 @@ class Motion(nn.Module):
         return current[:, :2] * 0
 
     def forward(self, previous, current):
-        return warp(current, self.offsets(previous, current))
+        return warp(current, self.offsets(previous, current), getattr(self.search, "interpolation", "bilinear"))
 
 
 class Gate(nn.Module):
@@ -385,6 +495,58 @@ class Gate(nn.Module):
         return torch.where(moved, self.model(previous, current), current)
 
 
+class Masked(nn.Module):
+    """The tile search's N+1, and a network's correction added where the search is unsure
+    (notebook 10): out = search's N+1 + g * r.
+
+    - **The search** (`TileSearch`, the published one): one motion a tile, half of it carried;
+      a still tile comes back as it was, correction and all.
+    - **The confidence**: N-2 moved by the search's whole motion should be N. Where it is not, the
+      motion does not explain the change: per `cell` px, `u` = the mean |N - N-2 moved| over the
+      mean |N - N-2| (+ one luma level, so a still cell is not unsure), clipped to 0..1 - 0 where
+      the search explains everything, 1 where it explains nothing.
+    - **The gate**: g = sigmoid(a u + b) per pixel, `a` and `b` learned. `gated=False` is the
+      control: g = 1 everywhere.
+    - **The network** (`TwoScale`'s body): N, the search's N+1, the residual |N - N-2 moved| and
+      `u`, and the tile's motion as two flat channels - 10 inputs - to a correction of 3. Its
+      last convolution starts at zero, so untrained the model is the search exactly, with the
+      gate at ½ (a = b = 0): both get a gradient from the first step.
+    """
+
+    def __init__(self, search, widths=(16, 32), blocks=3, cell=16, gated=True):
+        super().__init__()
+        self.search, self.cell, self.gated = search, cell, gated
+        self.network = TwoScale(widths, blocks, inputs=10)
+        self.gate = nn.Parameter(torch.zeros(2))     # a, b
+        self.register_buffer("luma", RGB_TO_YUV[0].view(1, 3, 1, 1) * 255.0)
+
+    def parts(self, previous, current):
+        """{"search": the search's N+1, "u": (N, 1, H, W), "gate": g, "correction": r}."""
+        height, width = current.shape[-2:]
+        search = self.search
+        cost = search.costs(previous, current)
+        offsets = search.choose(cost)[:, :, None, None]                  # read from: -fraction * motion
+        moving = (cost[:, search.no_motion] >= search.still).to(current.dtype).view(-1, 1, 1, 1)
+        made = warp(current, offsets.expand(-1, -1, height, width))
+        aligned = warp(previous, (offsets / search.fraction).expand(-1, -1, height, width))
+        now = (current * self.luma).sum(1, keepdim=True)
+        residual = (now - (aligned * self.luma).sum(1, keepdim=True)).abs()
+        change = (now - (previous * self.luma).sum(1, keepdim=True)).abs()
+        unexplained = F.avg_pool2d(residual, self.cell, ceil_mode=True)
+        changed = F.avg_pool2d(change, self.cell, ceil_mode=True)
+        u = (unexplained / (changed + 1.0)).clamp(0, 1)
+        u = u.repeat_interleave(self.cell, 2).repeat_interleave(self.cell, 3)[..., :height, :width]
+        motion = (-offsets / search.fraction / 8.0).expand(-1, -1, height, width)
+        inputs = torch.cat([current, made, residual / 32.0, u, motion], dim=1)
+        r = self.network.correction(inputs) * moving
+        gate = torch.sigmoid(self.gate[0] * u + self.gate[1]) if self.gated else torch.ones_like(u)
+        return {"search": made, "u": u, "gate": gate, "correction": r}
+
+    def forward(self, previous, current):
+        found = self.parts(previous, current)
+        return found["search"] + found["gate"] * found["correction"]
+
+
 class Hinted(nn.Module):
     """`current` moved by the motion the host measured, where it sent one in time, and by
     `search` where it did not (notebook 5).
@@ -407,9 +569,9 @@ class Hinted(nn.Module):
         return warp(current, offsets.expand(-1, -1, *current.shape[-2:]))
 
 
-def warp(picture, offsets):
-    """`picture` read at every pixel plus its (x, y) offset in pixels, bilinearly, the edge
-    repeated beyond the picture."""
+def warp(picture, offsets, mode="bilinear"):
+    """`picture` read at every pixel plus its (x, y) offset in pixels - bilinearly, or by
+    `mode` ("bicubic", "nearest") - the edge repeated beyond the picture."""
     n, _, height, width = picture.shape
     xs = torch.arange(width, device=picture.device, dtype=picture.dtype).view(1, 1, width)
     ys = torch.arange(height, device=picture.device, dtype=picture.dtype).view(1, height, 1)
@@ -417,4 +579,4 @@ def warp(picture, offsets):
     grid_x = (xs + offsets[:, 0] + 0.5) * (2.0 / width) - 1.0
     grid_y = (ys + offsets[:, 1] + 0.5) * (2.0 / height) - 1.0
     grid = torch.stack([grid_x, grid_y], dim=-1)
-    return F.grid_sample(picture, grid, mode="bilinear", padding_mode="border", align_corners=False)
+    return F.grid_sample(picture, grid, mode=mode, padding_mode="border", align_corners=False)
