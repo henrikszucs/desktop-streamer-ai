@@ -42,7 +42,7 @@ from N-2 to N, so N(p) = N-2(p - v), and N+1(p) = N(p - v/2).
 `full_search` is the control: the same blocks and costs, every offset within a radius, no
 candidates and no penalties but a tie-break towards small vectors. `load` runs any of these
 over every client tile of a split's clips, in order, and scores N+1 beside the stateless
-methods (repeat, the tile searches, notebook 4's blocks, the motion oracle).
+methods (repeat, the tile searches, notebook 4's blocks).
 """
 
 import math
@@ -307,7 +307,7 @@ def load(manifest, split, fields, pictures, published, tile_search, still=0.1, s
 
     `fields` is {name: RecursiveSearch, or ("full", block, radius)} - run over each clip in
     order, carried by `carried`, gated by the published search's still tiles. `pictures` is
-    {name: f(previous, current, target)} - stateless methods, and oracles. `chosen` the indices
+    {name: f(previous, current, target)} - stateless methods. `chosen` the indices
     of the split's sources to use (all by default).
 
     Returns {"tiles": {"changed", "moving" (the published gate open), "label", "family"

@@ -15,7 +15,7 @@ manifest, cut as the client cuts them - `clips.plan`), and it holds:
 - **the scores of carrying**: N moved by `c` times the newest motion, for every `c` of `GRID`,
   scored against N+1 (wPSNR per tile, over the region the client keeps from it). `c` = 0 is
   repeat, `c` = 1/2 the published search's rule. Any method that only decides how much of the
-  newest motion to carry - a rule, a fitted table, a small network, an oracle - is then a
+  newest motion to carry - a rule, a fitted table, a small network - is then a
   choice of `c` per tile, scored by looking it up, with nothing warped again;
 - what `clips.groups` gives a tile: changed or not, its kind, and the pointer.
 

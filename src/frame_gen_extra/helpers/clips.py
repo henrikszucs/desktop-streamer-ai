@@ -15,7 +15,7 @@ moves inside the window instead. A frame smaller than a tile is one tile of its 
 A sample is one tile of the client's 2x generation: received frames N-2 and N in, N+1 out,
 at every `every`th received frame of a clip. Its score is over the region the client keeps
 from it (`boxes`), not the whole window, and `evaluate` takes the model or any function of
-(previous, current, target) - the target, for an oracle.
+(previous, current).
 """
 
 from collections import defaultdict
@@ -125,18 +125,16 @@ def groups(manifest, split, tiles):
 @torch.no_grad()
 def evaluate(model, inputs, targets, masks, boxes, batch_size=64):
     """Every score in `metrics.report` per group, as `training.evaluate`, each sample scored on
-    its own `boxes` region. `model` is called as model(previous, current) - and, if it has an
-    `oracle` attribute set, with the target last."""
+    its own `boxes` region. `model` is called as model(previous, current)."""
     if isinstance(model, torch.nn.Module):
         model.to(DEVICE).eval()
-    oracle = getattr(model, "oracle", False)
     totals = {name: {} for name in masks}
     counts = dict.fromkeys(masks, 0)
     for first in range(0, len(inputs), batch_size):
         chunk = slice(first, first + batch_size)
         previous, current = to_tensor(inputs[chunk]).unbind(1)
         target = to_tensor(targets[chunk])
-        prediction = model(previous, current, *([target] if oracle else [])).float()
+        prediction = model(previous, current).float()
         for box in {tuple(b) for b in boxes[chunk]}:
             same = torch.from_numpy((boxes[chunk] == box).all(1)).to(DEVICE)
             for name, mask in masks.items():

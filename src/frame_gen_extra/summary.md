@@ -25,15 +25,15 @@ extrapolated frame is shown half a frame interval after the frame it came from.
 > one motion per tile from fixed convolutions - the cost of every offset within ±8 px on
 > half-resolution luma, a softmax, half of it applied to N - and nothing in it learns. On the
 > changed validation samples it scores **32.53 dB against 28.96 for showing N twice (+3.57)**; on
-> whole client tiles +2.69 (notebook 4). **In Chrome's WebGPU on the RTX 3090 it costs 2.34 ms of
+> whole client tiles +2.68 (notebook 4). **In Chrome's WebGPU on the RTX 3090 it costs 2.34 ms of
 > GPU a 1080p frame** (36 tiles in one run), a seventh of the 16.7 ms a generated frame has at 60
 > fps.
 >
 > **It is worth most where the picture moves as one, and little on real screens.** On whole
-> tiles: photos (pans) +7.4 dB over repeat, drawn pages +4.2, screens +1.4, video +0.8, drawn
+> tiles: photos (pans) +7.3 dB over repeat, drawn pages +4.2, screens +1.4, video +0.7, drawn
 > desktops +0.1 (notebook 4). On a screen recording most of what changes between two frames is
-> not motion at all - a redraw, a highlight, text, a fade: even the true motion per 16 px block,
-> found with N+1 in hand, takes back only a third of the search's error there (notebook 7).
+> not motion at all - a redraw, a highlight, text, a fade: only a quarter of the changed screen
+> tiles hold one motion of the whole tile (notebook 11).
 >
 > **The mock the client runs is worse than doing nothing**: its `2 · current − previous` aims at
 > N+2 and scores 24.84 dB against repeat's 28.96 (notebook 1).
@@ -46,10 +46,10 @@ extrapolated frame is shown half a frame interval after the frame it came from.
 >
 > **What learning does add is a decision** (notebook 13): per tile, the search's N+1 or N - a
 > 500-weight network on twelve numbers the search mostly computes - **+0.22 dB on the moving
-> tiles** (95% over videos +0.05 to +0.48), a third of what the perfect choice would give.
+> tiles** (95% over videos +0.05 to +0.48).
 >
 > **Searching per block ties, and helps the recordings** (notebook 9): 3-D recursive search, a TV's
-> block motion estimator, is +0.03 dB overall - +0.42 on video, +0.24 on screens, −0.5 to −0.8 on
+> block motion estimator, is +0.04 dB overall - +0.40 on video, +0.26 on screens, −0.5 to −0.8 on
 > the drawn scenes, where it carries a dragged window past its stop - for 14 times the work.
 >
 > **The rest of the gap is what happens between N and N+1, which two received frames do not
@@ -105,22 +105,22 @@ Run in order, from this folder:
   `GridSample` (`models.Motion`), the motion from a learned head, from `models.TileSearch` (fixed
   convolutions, nothing learned), or both. The gates, and the published tile search exported to
   `dist/`.
-- `04_extrapolate_oracle.ipynb` — **the ceiling of choosing**: the validation clips rebuilt whole and
-  cut into the client's tiles (`clips.plan`), the search per tile and per block, an oracle over
-  fixed candidate motions per cell, and a picker that needs no training.
+- `04_extrapolate_picker.ipynb` — **whole frames, and a motion chosen per cell**: the validation
+  clips rebuilt whole and cut into the client's tiles (`clips.plan`), the search per tile and per
+  block, and a picker that needs no training - per cell, the candidate motion that best carries
+  N−2 onto N.
 - `06_extrapolate_history.ipynb` — **the motion history**: each tile's search motion over the last
   three received pairs, N moved on by 17 shares of the newest motion, rules from physics and tables
   fitted on two, three and four frames. Cached in `checkpoints/history/`.
 - `07_extrapolate_budget.ipynb` — **where the search's error comes from**: every validation tile
   labelled by what its scene recorded (or `screen` / `video` for a recording), the search's summed
-  error split by label and family, and what three oracles take back.
+  error split by label and family, and its motion against the scroll the scenes recorded.
 - `08_extrapolate_pyramid.ipynb` — **measuring the motion better**: `models.PyramidSearch` coarse to
   fine with three sub-pixel fits and three ways to carry, beside the scroll the scenes recorded,
   and with notebook 6's stop decision fitted on its own history.
 - `09_extrapolate_recursive.ipynb` — **a motion per block, as a TV finds it**: 3-D recursive search
   (`helpers/recursive.py`) seeded by the tile searches, tuned on train clips, run in order over every
-  validation clip beside the searches, notebook 4's blocks, a full search per block and the motion
-  oracle.
+  validation clip beside the searches, notebook 4's blocks and a full search per block.
 - `10_extrapolate_masked.ipynb` — **a network where the search is unsure**: `models.Masked`, the
   search's N+1 plus a two-scale network's correction through a gate opened by the search's own
   confidence per cell; trained on whole client tiles (`helpers/masked.py`), beside the gate held
@@ -141,7 +141,8 @@ definition of a changed sample and, in `valid`, of a recorded sample a live capt
 `clips.py` rebuilds a split's whole clips from the manifest and cuts them as the client's
 `planTiles` does. `models.py` holds every method with the client's two-input contract.
 `training.py` handles loading, grouped scoring and upscale's training loop. `speed.py` is the
-timing. `show.py` draws motion for the notebooks. `budget.py` labels tiles by what moved and scores notebook 7's oracles. `history.py` keeps
+timing. `show.py` draws motion for the notebooks. `budget.py` labels tiles by what moved and sums the error of repeat and
+the search there. `history.py` keeps
 each tile's search motion over a clip. `recursive.py` is 3-D recursive search and the loop that
 runs any method over whole clips in order. `masked.py` cuts moving whole tiles and trains the
 masked network. `decide.py` gives every tile the search's measurements and the score of carrying
@@ -162,24 +163,14 @@ tiles (capped at 50 dB) for the later notebooks.
 | shift, tile / 16 px blocks | 1 | the whole-pixel offset that best carries N−2 onto N, half of it applied to N | no: a search | +3.85 / +3.53 dB |
 | two-scale network | 2 | a network draws a correction added to N | yes | +0.72 dB |
 | learned motion | 3 | a network outputs an offset per pixel; N copied from there | yes | +0.72 dB |
-| **tile search** (published) | 3 | 81 motions' costs averaged over the tile, a softmax, one motion, half applied | **no** | **+3.57 dB** (+2.69 on whole tiles) |
+| **tile search** (published) | 3 | 81 motions' costs averaged over the tile, a softmax, one motion, half applied | **no** | **+3.57 dB** (+2.68 on whole tiles) |
 | search + correction | 3 | the tile search plus a learned correction per pixel | the correction | no epoch beat the search |
 | match picker per cell | 4 | per cell, the candidate motion that best carries N−2 onto N | no | +0.30 dB over the search, changed whole tiles |
 | history table, three frames | 6 | per bin of how far the motion went a pair earlier, the share of it to carry | 12 numbers | +0.14 dB over the search, moving tiles |
 | pyramid + stop decision | 8 | a coarse-to-fine sub-pixel search, carried whole, with a history table | a table | +0.15 dB |
-| 3-D recursive search | 9 | a motion per 16 px block from a few penalised candidates | no | +0.03 dB (+0.42 video, +0.24 screens) |
+| 3-D recursive search | 9 | a motion per 16 px block from a few penalised candidates | no | +0.04 dB (+0.40 video, +0.26 screens) |
 | masked network | 10 | the search's N+1 plus a correction through a gate opened where the search is unsure | yes | +0.06 dB |
 | carry-or-repeat decision | 13 | per tile, the search's N+1 or N, chosen by a small network on the search's measurements | 500 weights | **+0.22 dB** |
-
-**Ceilings are not methods.** Each of these sees N+1, which the client never has. They say how much
-is left to gain, not what to build:
-
-| ceiling (sees N+1) | notebook | what it knows | over the search |
-| --- | --- | --- | --- |
-| repeat or carry, per tile | 13 | which of the two is closer to N+1 | +0.61 dB, moving tiles |
-| best candidate per 4x4 cell | 4 | which of repeat, the tile's motion, the block motions is closest | +2.42 dB, changed whole tiles |
-| the motion to N+1, per 16 px block | 9 | each block's true motion N → N+1 | +3.23 dB, moving tiles |
-
 ## The data
 
 **A sample is received frames N−2 and N, and the target N+1** - every second frame received,
@@ -273,28 +264,25 @@ CPU the graph takes 1.6 ms a tile.
 `GridSample`; desktop-streamer falls back to WebGL on a browser without WebGPU, and there its
 enhancer turns every enhancement off when this graph fails to load.
 
-## The ceiling of choosing
+## Whole frames and a picker
 
 Notebook 4, on the validation clips rebuilt whole and cut into the client's tiles: 10,241 tiles,
-3,469 changed.
+3,465 changed.
 
 | changed whole tiles | wPSNR | vs repeat |
 | --- | --- | --- |
-| repeat | 29.15 | |
-| linear (the mock) | 24.89 | −4.26 |
-| **tile search (published)** | **31.84** | **+2.69** |
-| tile search ±16 px | 31.70 | +2.55 |
-| per 64 / 32 px block | 31.73 / 31.17 | +2.58 / +2.03 |
-| match picker + blocks, per 32x32 (no training) | 32.14 | +2.99 |
+| repeat | 29.12 | |
+| linear (the mock) | 24.86 | −4.25 |
+| **tile search (published)** | **31.80** | **+2.68** |
+| tile search ±16 px | 31.67 | +2.55 |
+| per 64 / 32 px block | 31.70 / 31.14 | +2.58 / +2.02 |
+| match picker + blocks, per 32x32 (no training) | 32.10 | +2.99 |
 
-By kind, repeat → search: photos 23.76 → 31.13, pages 25.47 → 29.66, screens 33.04 → 34.42, video
-30.21 → 30.96, desktops 29.53 → 29.62. **The oracle** - per cell the candidate closest to N+1 among
-repeat, the tile's motion, per-block motions and the cost's next two minima - is +2.42 dB over the
-search per 4x4 cell, +0.41 choosing only repeat or the tile per tile; it is as large on screens
-(36.89 against 34.42) and video (33.83 against 30.96) as on pages. **A picker without training** -
-per cell the candidate that best carries N−2 onto N - is +0.30 dB over the search per 32x32 cell on
-the changed tiles, gaining on screens and video (+0.5 per 16x16) and losing on pages and photos
-(−0.4), whose content moves as one.
+By kind, repeat → search: photos 23.74 → 31.08, pages 25.56 → 29.73, screens 32.92 → 34.28, video
+30.24 → 30.98, desktops 29.53 → 29.62. **A picker without training** - per cell, among repeat, the
+tile's motion and the 64 and 32 px blocks' motions, the one that best carries N−2 onto N - is +0.30
+dB over the search per 32x32 cell on the changed tiles, gaining on screens (+0.73) and video
+(+0.53) and losing on pages and photos (−0.2 to −0.3), whose content moves as one.
 
 ## Motion history
 
@@ -313,8 +301,6 @@ the newest, as a share of it.
 | table, two frames: speed × match (control) | 38.15 | +0.06 |
 | **table, three frames: r** | **38.23** | **+0.14** |
 | table, four frames: r × r before | 38.05 | −0.04 |
-| oracle: repeat or ½, per tile | 38.73 | +0.64 |
-| oracle: best of 17 shares, per tile | 39.51 | +1.42 |
 
 The history helps the drawn scrolls (pages +0.63, desktops +0.60) and not the recordings (screens
 −0.10, video +0.06); a fourth frame's evidence does not hold up off the training clips; physics
@@ -324,23 +310,21 @@ loses. Most stops are not announced in the frames before.
 
 Notebook 7. Every validation tile labelled by what touched it between N−2 and N+1 - for a drawn
 scene by what it recorded, for a recording only `screen` or `video` - and the search's weighted
-squared error split by family; three oracles, each seeing N+1: **share** (the best of 17 shares of
-the tile's motion), **cell** (the best of notebook 4's candidates per 16x16), **motion** (the true
-motion per 16 px block, searched between N and N+1).
+squared error, which adds up across tiles, split by family.
 
-| active tiles, by family | tiles | of the search's error | share takes | cell takes | motion takes |
-| --- | --- | --- | --- | --- | --- |
-| screen | 5,169 | 35.3% | 5% | 11% | 35% |
-| drawn, the whole tile moves | 1,828 | 31.6% | 47% | 31% | 74% |
-| video | 2,134 | 17.4% | 20% | 37% | 75% |
-| drawn, part of the tile moves | 642 | 9.1% | 11% | 24% | 68% |
-| unannounced (anything starting, a menu at N+1) | 222 | 6.4% | 2% | 11% | 81% |
+| active tiles, by family | tiles | of the search's error | repeat dB | search dB |
+| --- | --- | --- | --- | --- |
+| screen | 5,169 | 35.3% | 46.27 | 46.78 |
+| drawn, the whole tile moves | 1,828 | 31.6% | 29.02 | 32.59 |
+| video | 2,134 | 17.4% | 34.72 | 34.78 |
+| drawn, part of the tile moves | 642 | 9.1% | 33.33 | 33.21 |
+| unannounced (anything starting, a menu at N+1) | 222 | 6.4% | 24.82 | 24.74 |
 
-- **On screens most of the error is not motion**: even the true motion per block takes back a third.
-- **On video the motion is there, per block, not per tile.**
-- **Drawn whole-tile motion is part measurement**: on steady scrolls the best share takes back 43% -
-  the search is half a stream pixel off, and past its ±8 px reach for the fastest scrolls (37% of
-  that label's error), where a ±16 px search is off by 1 px.
+- **On the recordings the search is barely above repeat**; on drawn tiles that move whole it is 3.6
+  dB above it, and where part of a drawn tile moves it is under it.
+- **Drawn whole-tile motion is part measurement**: on steady scrolls the search's motion is half a
+  stream pixel off, and past its ±8 px reach for the fastest (37% of that label's error), where a
+  ±16 px search is off by 1 px. Speed changes and starts are what the frames before do not announce.
 
 ## Measuring the motion better
 
@@ -369,15 +353,15 @@ block updates at once from the pass before, three passes.
 
 | moving validation tiles, ≤ 50 dB | vs the search | 95% over clips | whole tile moves | part moves | screen | video |
 | --- | --- | --- | --- | --- | --- | --- |
-| published search | 38.10 | | 30.69 | 30.15 | 42.68 | 34.18 |
-| full search per 8 px block, ±16 px | −1.68 | −2.02 to −1.36 | 27.39 | 28.92 | 41.29 | 33.73 |
-| **3DRS** | **+0.03** | −0.20 to +0.25 | 30.23 | 29.35 | **42.92** | **34.60** |
-| 3DRS + pointer seed | +0.03 | −0.20 to +0.26 | 30.20 | 29.65 | 42.92 | 34.60 |
-| motion oracle (sees N+1) | +3.23 | | 36.20 | 36.05 | 44.35 | 38.89 |
+| published search | 38.11 | | 30.72 | 30.21 | 42.69 | 34.20 |
+| full search per 8 px block, ±16 px | −1.70 | −2.04 to −1.37 | 27.39 | 28.99 | 41.29 | 33.76 |
+| **3DRS** | **+0.04** | −0.19 to +0.25 | 30.24 | 29.43 | **42.95** | **34.60** |
+| 3DRS + pointer seed | +0.04 | −0.20 to +0.27 | 30.21 | 29.76 | 42.95 | 34.60 |
 
-On the changed tiles +0.33 dB; with the stop decided perfectly 39.10 against the search's 38.74. It
-wins where a tile holds more than one motion (video, screens) and loses where a drawn motion stops.
-53 candidates a pixel - 14 times the published search's luma differences.
+The setting - 16 px blocks, penalties times 16, three passes - is the best on the moving tiles of
+36 train clips. On the changed tiles +0.33 dB. It wins where a tile holds more than one motion
+(video, screens) and loses where a drawn motion stops. 53 candidates a pixel - 14 times the
+published search's luma differences.
 
 ## A network behind the mask
 
@@ -406,18 +390,15 @@ split by it. 17% of the recordings' received frames are dropped for repeated fra
 | repeat | 24.69 | 29.30 | 23.49 | 32.39 | 30.13 |
 | published search | 29.32 | 29.33 | 31.06 | 34.17 | 30.85 |
 | search over repeat, 95% over videos (clips for drawn kinds) | +4.6 (+1.8 to +7.3) | +0.0 | +7.6 (+4.5 to +10.1) | +1.8 (+0.1 to +3.8) | +0.7 (−1.0 to +1.6) |
-| 3DRS (notebook 9's run) | 29.72 | 29.69 | 30.11 | 34.75 | 31.74 |
-| a whole-tile motion of 1 px or more (N → N+1) | 76% | 32% | 81% | 26% | 51% |
-| of those, the search carries it (0.75-1.25x) | 35% | 2% | 58% | 48% | 36% |
-| true motion, one per tile (sees N+1) | 35.74 | 30.59 | 33.20 | 34.88 | 32.51 |
-| true motion, per 16 px block (sees N+1) | 35.79 | 39.31 | 34.81 | 37.79 | 36.32 |
+| 3DRS (notebook 9's run) | 29.59 | 29.64 | 30.18 | 34.73 | 31.70 |
+| a whole-tile motion of 1 px or more (N → N+1, measured on the data) | 77% | 32% | 80% | 26% | 51% |
+| of those, the search carries it (0.75-1.25x) | 35% | 2% | 61% | 48% | 36% |
 
 - **One motion per tile is the drawn scenes' world**: most of their changed tiles move as one, and
   there the search gains 5-8 dB. A quarter of a screen's change is one motion, half of a video's.
 - **The rest of a screen's change is not motion**: a window fading, a menu, text, a highlight.
-- **The recordings' motion is per block**: the true block motion is 3-6 dB above the search on screens
-  and video, against 0-1.6 for one motion per tile; 3DRS takes +0.6 to +0.9 of it on the changed
-  tiles.
+- **A motion per block helps the recordings a little**: 3DRS is +0.6 dB over its run's search on the
+  changed screen tiles and +0.8 on video, and loses on the drawn photos.
 - With every frame from N−2 to N+2 new, the screens' gain (+1.8) is larger than on the first set's
   screen recordings, where uneven capture timing made the search carry half a motion (+0.4).
 
@@ -453,7 +434,6 @@ stream's bitrate and loop filter.
 | **learned, small network, every kind** | **34.57** | **38.74** | **36.14** | 43.25 | **34.64** | **39.03** | **+0.22** | +0.05 to +0.48 |
 | learned, small network, drawn kinds only | 34.23 | 38.90 | 36.04 | 43.20 | 34.65 | 38.94 | +0.14 | −0.09 to +0.41 |
 | learned, small network, recorded kinds only | 33.65 | 38.55 | 34.63 | 43.28 | 34.09 | 38.57 | −0.23 | −0.51 to +0.04 |
-| the better of the two per tile (sees N+1) | 35.58 | 38.99 | 36.67 | 43.36 | 35.11 | 39.42 | +0.61 | +0.36 to +0.94 |
 
 It leans on how much of the change the best motion explains, how clear the best match is against
 the next, and how good it is. It gains where a motion stops or is not a motion (pages, desktops,
@@ -493,6 +473,12 @@ the mock back.
 - **Notebook 05 was removed after commit c78a165.** It measured a motion hint the host would take
   from N+1, the frame it does not send; desktop-streamer's host captures at the rate it streams,
   so it never has N+1. The numbering keeps the gap.
+- **After commit e1afe46** every result that sees N+1 was taken out: notebook 4's oracle (the
+  notebook was `04_extrapolate_oracle.ipynb`), notebook 6's best share per tile, notebook 7's three
+  oracles, the "perfect stop" columns of notebooks 9 and 10, the true motion's scores in notebooks 9
+  and 11, and notebook 13's better of the two. Notebook 9 now picks its setting by its plain score
+  rather than with a perfect stop. Notebook 11 still measures the motion from N to N+1 to describe
+  the data - how much of a kind's change is motion - not as a method.
 
 ## Open questions
 
