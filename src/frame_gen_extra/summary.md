@@ -52,9 +52,10 @@ extrapolated frame is shown half a frame interval after the frame it came from.
 > block motion estimator, is +0.03 dB overall - +0.42 on video, +0.24 on screens, −0.5 to −0.8 on
 > the drawn scenes, where it carries a dragged window past its stop - for 14 times the work.
 >
-> **The rest of the gap is what happens between N and N+1.** A host that measured it on the frame
-> it does not send would be worth +3.2 dB (notebook 5), but desktop-streamer's host captures at
-> the rate it streams. History (notebook 6) and a better-measured motion (notebook 8) add +0.1 to
+> **The rest of the gap is what happens between N and N+1, which two received frames do not
+> show.** Knowing each tile's motion to N+1 would be worth +3.2 dB (notebook 5) - a ceiling, not a
+> method: only a host capturing at twice the rate it streams could measure it, and
+> desktop-streamer's does not. History (notebook 6) and a better-measured motion (notebook 8) add +0.1 to
 > +0.2 dB, all of it on the drawn scrolls.
 
 **One notebook is one model**, as in `../upscale/`: a notebook owns its method, its numbers
@@ -109,10 +110,10 @@ Run in order, from this folder:
 - `04_extrapolate_oracle.ipynb` — **the ceiling of choosing**: the validation clips rebuilt whole and
   cut into the client's tiles (`clips.plan`), the search per tile and per block, an oracle over
   fixed candidate motions per cell, and a picker that needs no training.
-- `05_extrapolate_hint.ipynb` — **a hint from the host**: each tile's motion from N to N+1 measured
-  on the clean frames, as cheaply as a host can afford, scored per tile and per block, its bits,
-  late hints; the hinted graph exported to `checkpoints/export/` - shelved, no real host captures
-  the frame it is measured on.
+- `05_extrapolate_hint.ipynb` — **a ceiling: the motion to N+1 known**: each tile's motion from N
+  to N+1 measured on the clean frames, scored per tile and per block, with the bits it would take
+  as a hint from the host and what late hints cost. Not a method desktop-streamer can use - its
+  host captures only the frames it sends - so its graph stays in `checkpoints/export/`.
 - `06_extrapolate_history.ipynb` — **the motion history**: each tile's search motion over the last
   three received pairs, N moved on by 17 shares of the newest motion, rules from physics and tables
   fitted on two, three and four frames. Cached in `checkpoints/history/`.
@@ -146,8 +147,8 @@ definition of a changed sample and, in `valid`, of a recorded sample a live capt
 `clips.py` rebuilds a split's whole clips from the manifest and cuts them as the client's
 `planTiles` does. `models.py` holds every method with the client's two-input contract.
 `training.py` handles loading, grouped scoring and upscale's training loop. `speed.py` is the
-timing. `show.py` draws motion for the notebooks. `hints.py` is the host's measurement of a
-hint. `budget.py` labels tiles by what moved and scores notebook 7's oracles. `history.py` keeps
+timing. `show.py` draws motion for the notebooks. `hints.py` measures notebook 5's motion
+to N+1. `budget.py` labels tiles by what moved and scores notebook 7's oracles. `history.py` keeps
 each tile's search motion over a clip. `recursive.py` is 3-D recursive search and the loop that
 runs any method over whole clips in order. `masked.py` cuts moving whole tiles and trains the
 masked network. `decide.py` gives every tile the search's measurements and the score of carrying
@@ -171,12 +172,21 @@ tiles (capped at 50 dB) for the later notebooks.
 | **tile search** (published) | 3 | 81 motions' costs averaged over the tile, a softmax, one motion, half applied | **no** | **+3.57 dB** (+2.69 on whole tiles) |
 | search + correction | 3 | the tile search plus a learned correction per pixel | the correction | no epoch beat the search |
 | match picker per cell | 4 | per cell, the candidate motion that best carries N−2 onto N | no | +0.30 dB over the search, changed whole tiles |
-| hint (shelved) | 5 | the motion N → N+1 the host measured on the frame it did not send | no | +3.16 dB over the search, changed whole tiles |
 | history table, three frames | 6 | per bin of how far the motion went a pair earlier, the share of it to carry | 12 numbers | +0.14 dB over the search, moving tiles |
 | pyramid + stop decision | 8 | a coarse-to-fine sub-pixel search, carried whole, with a history table | a table | +0.15 dB |
 | 3-D recursive search | 9 | a motion per 16 px block from a few penalised candidates | no | +0.03 dB (+0.42 video, +0.24 screens) |
 | masked network | 10 | the search's N+1 plus a correction through a gate opened where the search is unsure | yes | +0.06 dB |
 | carry-or-repeat decision | 13 | per tile, the search's N+1 or N, chosen by a small network on the search's measurements | 500 weights | **+0.22 dB** |
+
+**Ceilings are not methods.** Each of these sees N+1, which the client never has. They say how much
+is left to gain, not what to build:
+
+| ceiling (sees N+1) | notebook | what it knows | over the search |
+| --- | --- | --- | --- |
+| repeat or carry, per tile | 13 | which of the two is closer to N+1 | +0.61 dB, moving tiles |
+| best candidate per 4x4 cell | 4 | which of repeat, the tile's motion, the block motions is closest | +2.42 dB, changed whole tiles |
+| the motion to N+1, per tile | 5 | each tile's true motion N → N+1 - as a hint, it would need a host capturing at twice the rate it streams | +3.16 dB, changed whole tiles |
+| the motion to N+1, per 16 px block | 9 | each block's true motion N → N+1 | +3.23 dB, moving tiles |
 
 ## The data
 
@@ -294,10 +304,14 @@ per cell the candidate that best carries N−2 onto N - is +0.30 dB over the sea
 the changed tiles, gaining on screens and video (+0.5 per 16x16) and losing on pages and photos
 (−0.4), whose content moves as one.
 
-## A hint from the host
+## The ceiling: the motion to N+1 known
 
-**Shelved: no real host can send it.** It needs the frame between two the stream sends, and
-desktop-streamer's host captures at the rate it streams. Notebook 5 measures what it would be worth.
+**A ceiling, not a method.** The client never has N+1. Only a host capturing at twice the rate it
+streams has the frame between two it sends, and could measure each tile's motion on it and send
+that as a hint. desktop-streamer's host captures at the stream's rate into a single H.264 pipe:
+a hint would mean capturing twice the frames and running a motion search on the host as well, and
+a host capturing at 60 fps could as well stream 60. Notebook 5 measures what knowing the motion
+would be worth, which bounds what any motion the client works out can still gain.
 
 | changed whole tiles (3,460) | all | page | desktop | photo | screen | video |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -311,9 +325,10 @@ desktop-streamer's host captures at the rate it streams. Notebook 5 measures wha
   a wheel-scrolled clip it averages 45.7 dB a frame, the search 41.1, repeat 42.9.
 - **On recordings one motion per tile is worth little even known exactly** (screens +0.87); per 32 px
   block it is +2.6 on screens and +4.2 on video, at ten times the bits.
-- **The host can afford it**: from an eighth of the source with ±1 refinements it finds the exhaustive
-  search's motion on 92% of the changed tiles - 0.74 million absolute differences a tile. Two bytes a
-  tile: 17 kbit/s at 1080p; per block 178 kbit/s. A quarter of the hints late: still 34.12.
+- **Sending it would be cheap; getting it is not.** Two bytes a tile is 17 kbit/s at 1080p (per block
+  178 kbit/s), and from an eighth of the source with ±1 refinements the search finds the exhaustive
+  one's motion on 92% of the changed tiles. But it needs the second capture, and 0.74 million
+  absolute differences a tile on the host on top of it. A quarter of the hints late: still 34.12.
 
 ## Motion history
 
@@ -518,7 +533,7 @@ the mock back.
 - **What do live 60 fps desktops look like?** The screen captures here are edited YouTube tutorials
   at 24-30 fps, recompressed by YouTube. A few minutes of real 60 fps desktop recording, read by
   `helpers/recorded.py` the same way, would say what a live session gains.
-- **Can the client's own knowledge stand in for the hint?** When the peer drives, it knows its own
+- **Can the client's own knowledge stand in for N+1?** When the peer drives, it knows its own
   wheel and drag input. A scroll stopping and a window following the pointer are the two cases two
   frames cannot predict.
 - **Video is still thin at 60 fps**: 49 videos, 11 of them to validation, and 83 of the 245 clips

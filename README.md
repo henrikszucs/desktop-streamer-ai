@@ -22,7 +22,7 @@ below):
 | --- | --- | --- |
 | [`src/upscale/`](src/upscale/summary.md) | more pixels out than in | fifteen notebooks: static baselines, nine ways to build a model, host hints, and the bits-against-compute trade-off; nothing shipped to the client yet |
 | [`src/frame_gen_intra/`](src/frame_gen_intra/summary.md) | 2x frame generation by interpolation: the unsent frame between two received ones, shown half an interval late | two notebooks: extrapolation's first 60 fps run set read as (N, N+2) → N+1, static baselines, and extrapolation's tile search made two-sided (+10.6 dB over holding N and +9.3 over the mock's mean on 80 px samples, as a graph with the client's contract), with a per-pixel pick between it and the mean that adds little; a network on top of the search never beats it - what is left (6.4 dB to an oracle) is which frame a one-frame change belongs to, which two frames do not show; not yet timed in the browser or run in the client |
-| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | 2x frame generation without latency: the frame between two received ones, made before the next arrives | fourteen notebooks on a run set two thirds recorded (YouTube-8M screen captures and 50-60 fps video, beside drawn desktop scenes): static baselines, networks that hedge, and a tile search built from fixed convolutions (+3.6 dB over repeating the frame on changed 80 px samples, +2.7 on whole client tiles - +7.4 on photos, +1.4 on screens, +0.8 on video - 2.3 ms a 1080p frame in Chrome's WebGPU) that passes desktop-streamer's client tests in place of its mock, which scores 4.1 dB below repeating; on a real screen most of what changes is not motion, and even the true motion per block takes back only a third of the search's error; no network that draws pixels or motion beats the search - one behind its confidence mask adds +0.06 dB, 3-D recursive search per block +0.03, each at 14 times the work; a learned per-tile choice to carry the motion or repeat adds +0.22 dB on moving tiles; a motion hint from the host would add +3.2 dB but needs a host capturing at twice the stream's rate, and is shelved |
+| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | 2x frame generation without latency: the frame between two received ones, made before the next arrives | fourteen notebooks on a run set two thirds recorded (YouTube-8M screen captures and 50-60 fps video, beside drawn desktop scenes): static baselines, networks that hedge, and a tile search built from fixed convolutions (+3.6 dB over repeating the frame on changed 80 px samples, +2.7 on whole client tiles - +7.4 on photos, +1.4 on screens, +0.8 on video - 2.3 ms a 1080p frame in Chrome's WebGPU) that passes desktop-streamer's client tests in place of its mock, which scores 4.1 dB below repeating; on a real screen most of what changes is not motion, and even the true motion per block takes back only a third of the search's error; no network that draws pixels or motion beats the search - one behind its confidence mask adds +0.06 dB, 3-D recursive search per block +0.03, each at 14 times the work; a learned per-tile choice to carry the motion or repeat adds +0.22 dB on moving tiles |
 
 ## The mock graphs the client runs
 
@@ -273,7 +273,7 @@ desktop-streamer-ai/
 │   │   ├── 02_extrapolate_twoscale.ipynb  current + a correction made at 1/2 and 1/4 resolution, and its control
 │   │   ├── 03_extrapolate_motion.ipynb  motion instead of pixels: a learned head, a tile search, and both
 │   │   ├── 04_extrapolate_oracle.ipynb  whole frames in the client's tiles, and the most a learned picker could add
-│   │   ├── 05_extrapolate_hint.ipynb  the host's motion hint for the frame it does not send - shelved: no host captures it
+│   │   ├── 05_extrapolate_hint.ipynb  a ceiling: each tile's motion to N+1 known - not a method, the host does not have N+1
 │   │   ├── 06_extrapolate_history.ipynb  each tile's motion over the last three received pairs
 │   │   ├── 07_extrapolate_budget.ipynb  where the search's error comes from, by scene event and kind
 │   │   ├── 08_extrapolate_pyramid.ipynb  the motion measured coarse to fine and sub-pixel, with a stop decision
@@ -286,7 +286,7 @@ desktop-streamer-ai/
 │   │                                 desktop motion), recorded.py (the screen captures picked), runs.py,
 │   │                                 clips.py (whole frames, cut as the client cuts them), models.py,
 │   │                                 training.py, speed.py, show.py (motion pictures), hints.py (the
-│   │                                 host's hint), history.py, budget.py, recursive.py, masked.py,
+│   │                                 motion to N+1), history.py, budget.py, recursive.py, masked.py,
 │   │                                 decide.py, webexport.py
 │   └── upscale/
 │       ├── summary.md                the models, the numbers, and what they do not say
