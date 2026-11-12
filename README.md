@@ -24,13 +24,17 @@ below):
 | [`src/frame_gen_intra/`](src/frame_gen_intra/summary.md) | 2x frame generation by interpolation: the unsent frame between two received ones, shown half an interval late | five notebooks on extrapolation's run set, two thirds recorded: static baselines, extrapolation's tile search made two-sided (+2.40 dB over the mock's mean on the client's moving whole tiles - +7.5 on photos, +6.8 on drawn pages, +0.9 on video, +0.5 on screens - 3.3 ms a 1080p frame in Chrome's WebGPU), and a per-pixel pick on top (+0.11 more, on the recordings, for 3.4 times the time); both graphs pass desktop-streamer's client tests in place of its mock; nothing learned beats the search - a network on top, or extrapolation's per-tile decision among six pictures the search makes (+0.00) - and a ±16 px search is +0.22 for 2.7 times the time |
 | [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | 2x frame generation without latency: the frame between two received ones, made before the next arrives | thirteen notebooks on a run set two thirds recorded (YouTube-8M screen captures and 50-60 fps video, beside drawn desktop scenes): static baselines, networks that hedge, and a tile search built from fixed convolutions (+3.6 dB over repeating the frame on changed 80 px samples, +2.7 on whole client tiles - +7.3 on photos, +1.4 on screens, +0.7 on video - 2.3 ms a 1080p frame in Chrome's WebGPU) that passes desktop-streamer's client tests in place of its mock, which scores 4.1 dB below repeating; on a real screen most of what changes is not motion - only a quarter of the changed screen tiles hold one motion of the whole tile; no network that draws pixels or motion beats the search - one behind its confidence mask adds +0.06 dB, 3-D recursive search per block +0.04, each at 14 times the work; a learned per-tile choice to carry the motion or repeat adds +0.22 dB on moving tiles, and +0.18 inside the graph on the search's own costs alone, for 7% more time (2.75 ms a 1080p frame) - published beside the search, both passing the client's tests |
 
-## The mock graphs the client runs
+## The graphs the client runs, and their mocks
 
-`src/mock/make_mock_models.py` writes the three graphs desktop-streamer's
-`src/client/web/media/models/` holds - `upscale.onnx`, `interpolate.onnx`,
-`extrapolate.onnx` - which the client's enhancement menu runs through ONNX Runtime Web
-(`src/client/web/src/room/stream-enhance.js` there). They are
-stand-ins, not models: the smallest ONNX graph with the shape of the real thing and real GPU
+desktop-streamer's `src/client/web/media/models/` holds the graphs the client's enhancement
+menu runs through ONNX Runtime Web (`src/client/web/src/room/stream-enhance.js` there), all
+trained here now: `upscale.onnx` (`src/upscale/`, notebook 23), `interpolate.onnx`
+(`dist/frame_gen_intra/interpolate2x_tilesearch_r4_s2.onnx`) and `extrapolate.onnx`
+(`dist/frame_gen_extra/extrapolate2x_tilesearch_decide_r4_s2.onnx`), and the `3x` twins of the
+two frame generators the client runs when both are on (`interpolate3x_tilesearch_r4_s2.onnx`,
+`extrapolate3x_tilesearch_decide_r4_s2.onnx`). `src/mock/make_mock_models.py` writes the
+stand-ins they replaced, and only over the graphs it is named (`--upscale`, `--interpolate`,
+`--extrapolate`). The mocks are stand-ins, not models: the smallest ONNX graph with the shape of the real thing and real GPU
 work in between, computing something that leaves the picture right (an identity convolution
 and a bilinear ×2; the mean of two frames; their linear extrapolation), so the client
 pipeline could be built and timed before any trained weights exist. The client never hands a
@@ -47,8 +51,8 @@ channel tensor: the client would pay a copy and the graph a `Slice` for it), `ou
 `[N, 3, H, W]` or twice it for the upscaler.
 
 ```
-uv run src/mock/make_mock_models.py                 # into ../desktop-streamer, checked out beside this repo
-uv run src/mock/make_mock_models.py <models folder> # or anywhere else
+uv run src/mock/make_mock_models.py --interpolate --extrapolate   # into ../desktop-streamer, checked out beside this repo
+uv run src/mock/make_mock_models.py <models folder> --upscale     # or anywhere else
 ```
 
 ## Setup

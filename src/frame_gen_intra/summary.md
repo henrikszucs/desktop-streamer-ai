@@ -70,7 +70,8 @@ Run in order, from this folder:
 - `01_interpolate_dummy.ipynb` — **static methods only**, on 80 px samples: hold, the mock's mean,
   the exact shift and the bilateral block search as torch references, extrapolation's tile search
   turned two-sided, and the per-pixel pick; by kind, at the client's halo, in pictures, and the two
-  graphs exported with the mock's mean beside them. Nothing is trained; a minute.
+  graphs exported with the mock's mean beside them - and the search's 3x twin, at ⅔, for the
+  client's both-on mode. Nothing is trained; a minute.
 - `02_interpolate_refine.ipynb` — **a network on top of the search** (`models.Refine`), three ways
   and under three losses, trained to convergence (12 minutes in all), and `models.Commit`, a rule
   that reads N alone where the search's two reads disagree. Nothing is exported.
@@ -275,16 +276,23 @@ Desktop CPU, one tile: the search 2.4 ms, the pick 3.7. Neither runs on WebGL (`
 
 ## In desktop-streamer
 
-Either graph copied over the client's `src/client/web/media/models/interpolate.onnx` passes all 16
-tests of its `tests/enhance.test.js`. The one to copy is the search: +2.40 dB over the mock for
-3.3 ms; the pick adds 0.11 for 7.8 ms more. What the client does with it, as the code stands:
+`interpolate2x_tilesearch_r4_s2.onnx` is the client's `interpolate.onnx` now, in place of the mock
+(in desktop-streamer's working tree, not yet committed there): +2.40 dB over the mock for 3.3 ms;
+the pick, which would fit as well, adds 0.11 for 7.8 ms more. Either passes all 16 tests of its
+`tests/enhance.test.js` - 17 now - and loads in Chrome's WebGPU with only the int64 shape arithmetic
+on the CPU. How the client places it:
 
 - with **interpolate** on alone, the made frame is shown at 0 and N+2 at ½ of the interval -
   half way between N and N+2 in time, which is what the graphs make;
-- with **interpolate and extrapolate** both on, the made frame is shown at 0, N+2 at ⅓ and the
-  extrapolated one at ⅔: the interpolated one is then a third of the way from N to N+2 in time, not
-  half. The graphs carry half the motion, so it lands too far - a graph with a third would fit;
-- on **WebGL** it does not load.
+- with **interpolate and extrapolate** both on, three pictures an interval: the made frame at 0,
+  N+2 at ⅓, the extrapolated one at ⅔ - so the interpolated frame is two thirds of the way from N
+  to N+2, and the client runs `interpolate3x_tilesearch_r4_s2.onnx` as `interpolate3x.onnx` there:
+  the same search, N read at −⅔ of the motion and N+2 at +⅓, mixed ⅓ : ⅔ by nearness (notebook 1,
+  `models.Interpolate(at=...)`). The run set holds 2x samples only, so that placement is not
+  scored;
+- on **WebGL** it is not offered: the client greys the row "(needs WebGPU)".
+
+`../mock/make_mock_models.py --interpolate` writes the mock back over both.
 
 ## Open questions
 
@@ -302,11 +310,9 @@ tests of its `tests/enhance.test.js`. The one to copy is the search: +2.40 dB ov
 
 ## Next
 
-1. **Put the search in desktop-streamer's client** and watch a scroll and a dragged window beside
-   extrapolation's; time it on a laptop iGPU.
-2. **Fix the ⅓ placement** when interpolate and extrapolate are both on, or export a graph that
-   carries a third of the motion for it.
-3. **A cheaper reach and a cheaper pick** (open questions), each scored on notebook 3's tables.
+1. **Watch it in a live session** - it is the client's `interpolate.onnx` - a scroll and a dragged
+   window beside extrapolation's, and time it on a laptop iGPU.
+2. **A cheaper reach and a cheaper pick** (open questions), each scored on notebook 3's tables.
 
 ## History
 

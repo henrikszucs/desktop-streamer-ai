@@ -217,15 +217,29 @@ class TileSearch(nn.Module):
 
 class Interpolate(nn.Module):
     """N and N+2 moved towards each other by `search`'s motion, and averaged (`side` keeps
-    one of them)."""
+    one of them).
 
-    def __init__(self, search, side="both"):
+    `at` is when the frame made lies between N (0) and N+2 (1): ½ for 2x generation. desktop-
+    streamer's client, with interpolation and extrapolation both on, shows three pictures an
+    interval and the interpolated one at ⅔ - so there N is read at -⅔ of the motion and N+2 at
+    +⅓, and the two are mixed by nearness, ⅓ : ⅔. Nothing here measures that placement: the run
+    set holds 2x samples only."""
+
+    def __init__(self, search, side="both", at=0.5):
         super().__init__()
-        self.search, self.side = search, side
+        self.search, self.side, self.at = search, side, at
 
     def forward(self, previous, current):
         offsets = self.search(previous, current).expand(-1, -1, *current.shape[-2:])
-        return meet(previous, current, offsets, self.side)
+        if self.at == 0.5:
+            return meet(previous, current, offsets, self.side)
+        motion = offsets / self.search.fraction                  # N+2 read from, at the whole motion
+        before, after = warp(previous, -self.at * motion), warp(current, (1 - self.at) * motion)
+        if self.side == "previous":
+            return before
+        if self.side == "current":
+            return after
+        return (1 - self.at) * before + self.at * after
 
 
 class TilePick(nn.Module):

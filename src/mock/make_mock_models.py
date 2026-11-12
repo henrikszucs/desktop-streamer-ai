@@ -7,12 +7,20 @@ timed before any trained weights exist. What they compute is chosen so the pictu
 right: a client running all three with these graphs shows the stream it would show
 without them, only later.
 
-    upscale.onnx      input [N, 3, H, W]                     -> output [N, 3, 2H, 2W]
-                      a depthwise 3x3 identity conv, then bilinear x2
-    interpolate.onnx  previous, current [N, 3, H, W] each    -> output [N, 3, H, W]
-                      the mean of the two frames
-    extrapolate.onnx  previous, current [N, 3, H, W] each    -> output [N, 3, H, W]
-                      2 * current - previous clipped to [0, 1]
+Every graph the client runs is trained now: `upscale.onnx` is desktop-streamer-ai's
+notebook 23 export, told each frame's condition beside the picture, and the frame generators
+are that repository's tile searches (`src/frame_gen_intra/` notebook 1, `src/frame_gen_extra/`
+notebook 13), each with a 3x twin the client runs when both are on. So this script writes a
+mock only over the graphs it is named: `--upscale`, `--interpolate`, `--extrapolate`.
+
+    upscale.onnx        input [N, 3, H, W]                   -> output [N, 3, 2H, 2W]
+                        a depthwise 3x3 identity conv, then bilinear x2           (--upscale)
+    interpolate.onnx    previous, current [N, 3, H, W] each  -> output [N, 3, H, W]
+                        the mean of the two frames                                (--interpolate)
+    interpolate3x.onnx  the same, the two frames mixed 1/3 : 2/3                  (--interpolate)
+    extrapolate.onnx    previous, current [N, 3, H, W] each  -> output [N, 3, H, W]
+                        2 * current - previous clipped to [0, 1]                  (--extrapolate)
+    extrapolate3x.onnx  the same                                                  (--extrapolate)
 
 Every tensor is float32 NCHW in [0, 1] with N, H and W dynamic, so one file serves every
 resolution the stream arrives at and every batch of tiles it is cut into, and every operator
@@ -51,8 +59,8 @@ prices for whatever it is built from; these are the prices.
 Run from the repo root and the files land where the client reads them, in desktop-streamer
 checked out beside this repo - or give the folder to write to:
 
-    uv run src/mock/make_mock_models.py
-    uv run src/mock/make_mock_models.py <models folder>
+    uv run src/mock/make_mock_models.py --interpolate --extrapolate
+    uv run src/mock/make_mock_models.py <models folder> --upscale
 """
 
 # internal
@@ -68,8 +76,8 @@ from onnx import TensorProto, helper, numpy_helper
 # client is desktop-streamer, checked out beside this repo; a folder given on the command
 # line is written to instead
 CLIENT_DIR = Path(__file__).resolve().parents[3] / "desktop-streamer"
-OUT_DIR = (Path(sys.argv[1]) if len(sys.argv) > 1
-           else CLIENT_DIR / "src" / "client" / "web" / "media" / "models")
+FOLDERS = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+OUT_DIR = Path(FOLDERS[0]) if FOLDERS else CLIENT_DIR / "src" / "client" / "web" / "media" / "models"
 OPSET = 17
 
 
@@ -137,6 +145,15 @@ def make_blend(name, weight_a, weight_b):
 
 
 if __name__ == "__main__":
-    make_upscale()
-    make_blend("interpolate", 0.5, 0.5)
-    make_blend("extrapolate", -1.0, 2.0)
+    asked = set(sys.argv[1:])
+    if not asked & {"--upscale", "--interpolate", "--extrapolate"}:
+        print("every graph the client runs is trained: name the mocks to write over them - "
+              "--upscale, --interpolate, --extrapolate")
+    if "--upscale" in asked:
+        make_upscale()
+    if "--interpolate" in asked:
+        make_blend("interpolate", 0.5, 0.5)
+        make_blend("interpolate3x", 1 / 3, 2 / 3)
+    if "--extrapolate" in asked:
+        make_blend("extrapolate", -1.0, 2.0)
+        make_blend("extrapolate3x", -1.0, 2.0)

@@ -139,7 +139,7 @@ Run in order, from this folder:
   logistic regression and a small network trained on every kind, the drawn and the recorded. Then
   the decision on the six features the search's costs give, measured in the graph
   (`models.Decided`), checked against the table's on real tiles, timed in the browser and exported
-  to `dist/`.
+  to `dist/` - with its 3x twin, a third of the motion carried, for the client's both-on mode.
 
 The code the notebooks share lives in `helpers/`. `sources.py`, `degrade.py` and `metrics.py`
 are copies of upscale's. `scenes.py` is the drawn desktop motion. `recorded.py` lists the screen
@@ -479,24 +479,23 @@ of GPU); and no bool next to a node the provider runs in its own layout (`MaxPoo
 
 ## In desktop-streamer
 
-`extrapolate2x_tilesearch_decide_r4_s2.onnx` - or the search alone,
-`extrapolate2x_tilesearch_r4_s2.onnx` - copied over the client's
-`src/client/web/media/models/extrapolate.onnx` passes all 16 tests of its
-`tests/enhance.test.js`: two inputs, `[N, 3, H, W]` with the symbolic names it reads, and the
-symbolic dimensions patched to a fixed shape for WebGL. Each has been checked against torch at
-36 and 4 tiles of 328×188 and at one tile of 64×32 (a frame smaller than a tile). The one to copy
-is the decision's: +0.18 dB for 7% more time. What the client does with either, as the code
-stands:
+`extrapolate2x_tilesearch_decide_r4_s2.onnx` is the client's `extrapolate.onnx` now, in place of
+the mock (in desktop-streamer's working tree, not yet committed there); the search alone,
+`extrapolate2x_tilesearch_r4_s2.onnx`, would fit as well. Both pass all 16 tests of its
+`tests/enhance.test.js` - 17 now: two inputs, `[N, 3, H, W]` with the symbolic names it reads -
+and load in Chrome's WebGPU with only the int64 shape arithmetic on the CPU. How the client
+places it:
 
 - with **extrapolate** on alone, a received frame is shown at 0 and the generated one at ½ of
   the frame interval - frame N+1 of the 2x stream, which is what the graph makes;
-- with **interpolate and extrapolate** both on, the generated frame is shown at ⅔, a third of
-  an interval after the received one. The graph still carries half the motion, so it lands
-  half again too far;
-- on **WebGL** it does not load (see "Motion").
+- with **interpolate and extrapolate** both on, three pictures an interval, the extrapolated
+  one is shown a third of an interval after the received one, so the client runs
+  `extrapolate3x_tilesearch_decide_r4_s2.onnx` as `extrapolate3x.onnx` there: the same search
+  and decision, a third of the motion carried (notebook 13). The run set holds 2x samples only,
+  so that placement is not scored;
+- on **WebGL** it is not offered: the client greys the row "(needs WebGPU)" (see "Motion").
 
-`../mock/make_mock_models.py` still writes the mock `extrapolate.onnx`; running it again puts
-the mock back.
+`../mock/make_mock_models.py --extrapolate` writes the mock back over both.
 
 ## History
 
@@ -534,13 +533,10 @@ the mock back.
 
 ## Next
 
-1. **Run the search with its decision in a live session** (`extrapolate2x_tilesearch_decide_r4_s2.onnx`),
+1. **Run the search with its decision in a live session** (it is the client's `extrapolate.onnx`),
    and time it on a laptop iGPU - the 3090 numbers are a floor. With a real 60 fps recording of the
    session kept as a test set.
-2. **Fix the two client cases the graph does not fit**: offer extrapolate only on WebGPU, and either
-   drop the ⅔ placement when interpolate is also on or export a graph that carries a third of the
-   motion for it.
-3. **Skip still tiles in the client.** The graph returns them unchanged, but still runs the search on
+2. **Skip still tiles in the client.** The graph returns them unchanged, but still runs the search on
    them; comparing the two received tiles first would save that work.
 
 Sibling problems: `../upscale/summary.md`, `../frame_gen_intra/summary.md`.
