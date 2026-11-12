@@ -35,6 +35,12 @@ Notebook 2:
   where each frame is read, how the two reads mix, and pixels of its own. Starts as the search.
 - `Commit(search)`: the tile search, reading N alone where its two reads disagree - a change
   drawn once, a frame late, instead of twice at half strength.
+
+Notebook 4:
+
+- `Decided(search, decision)`: per tile, one of six pictures the search's motion makes - the
+  search, the mean, either frame held, either frame moved alone - picked by a small network on
+  six numbers of the search's own costs.
 """
 
 import torch
@@ -228,7 +234,12 @@ class TilePick(nn.Module):
     Two candidates for N+1: `moved`, the two frames moved half the tile's motion towards each
     other and averaged (`Interpolate`), and `still`, their mean where they are. Each one's
     disagreement is |N - N+2| in luma between its two reads, averaged over a `window` x
-    `window` box (a fixed `AveragePool`, edges padded by repeating). Where the motion is right
+    `window` box of the pixels inside the tile - two fixed `AveragePool`s, a column and then a
+    row, whose pads they do not count: the same average as one box, since both its sum and its
+    count of pixels inside the tile split by rows and columns, for 2·`window` reads a pixel
+    instead of `window`². Not padded by repeating the edge: the exporter builds `F.pad`'s pads at
+    run time, and onnxruntime-web's WebGPU provider gets them wrong - an output twice the tile's
+    size. Where the motion is right
     the two reads are the same content and agree; where it is wrong they do not. The pick is
     soft - a sigmoid of the difference of the two disagreements times `sharpness` per luma
     level - so a pixel where both agree as well gets both, and the seam between a moved
@@ -242,9 +253,10 @@ class TilePick(nn.Module):
         self.search, self.window, self.sharpness = search, window, sharpness
 
     def disagreement(self, a, b):
-        pad = self.window // 2
         difference = (255.0 * (_luma(a) - _luma(b))).abs()
-        return F.avg_pool2d(F.pad(difference, (pad, pad, pad, pad), mode="replicate"), self.window, stride=1)
+        pad = self.window // 2
+        column = F.avg_pool2d(difference, (self.window, 1), stride=1, padding=(pad, 0), count_include_pad=False)
+        return F.avg_pool2d(column, (1, self.window), stride=1, padding=(0, pad), count_include_pad=False)
 
     def forward(self, previous, current):
         offsets = self.search(previous, current).expand(-1, -1, *current.shape[-2:])
@@ -282,6 +294,124 @@ class Commit(nn.Module):
         disagreement = F.avg_pool2d(F.pad(difference, (pad, pad, pad, pad), mode="replicate"), self.window, stride=1)
         agree = torch.sigmoid(self.sharpness * (self.level - disagreement))
         return before + agree * 0.5 * (after - before)
+
+
+class Decided(nn.Module):
+    """Per tile, one of the pictures the tile search's motion makes, as a small network decides
+    from the search's own costs (notebook 4) - extrapolation's notebook 13 decision, with more
+    to choose from, since both ends of the motion are known.
+
+    Every candidate is N read at -s·d and N+2 read at +s·d, mixed a : 1 - a - d the search's
+    offset (half its motion from N to N+2), s and a two numbers a tile (`CHOICES`):
+
+    | choice | s | a | |
+    | --- | --- | --- | --- |
+    | search | 1 | ½ | `Interpolate`: both moved half way, averaged |
+    | mean | 0 | ½ | the mock |
+    | hold N | 0 | 1 | N shown again |
+    | hold N+2 | 0 | 0 | N+2 shown early |
+    | N moved | 1 | 1 | N moved half way alone: a change drawn once, a frame late |
+    | N+2 moved | 1 | 0 | N+2 moved back half way alone: a change drawn once, a frame early |
+
+    So the graph keeps the search's two `GridSample`s and a mix, scaled per tile: the decision
+    adds nothing at the tile's resolution. A tile the search's gate calls still has d = 0.
+
+    `features` gives the six numbers extrapolation's decision reads from the search's 81 costs
+    and its motion (`FEATURES`, as `../../frame_gen_extra/helpers/models.py`'s `Decided` computes
+    them; here the costs compare N and N+2), standardised by `mean` and `std` and handed to
+    `decision`, any module from (N, 6) to one logit per choice (N, len(choices)): the largest
+    wins. `choices` names which of `CHOICES` it picks among. Without a decision the module still
+    measures (`measure`) and makes every candidate (`candidates`), for a table to train one on.
+
+    Built for the browser's WebGPU provider as extrapolation's is (its `helpers/webexport.py`):
+    no bool reshaped, no `MaxPool` - the next local minimum by one fixed `MatMul` that gathers
+    every offset's neighbours - and the winner a float one-hot, so the graph also runs under
+    graph capture.
+    """
+
+    FEATURES = ("log zero cost", "log best cost", "explained", "peak", "gap", "log motion")
+    CHOICES = {"search": (1.0, 0.5), "mean": (0.0, 0.5), "hold N": (0.0, 1.0), "hold N+2": (0.0, 0.0),
+               "N moved": (1.0, 1.0), "N+2 moved": (1.0, 0.0)}
+    FAR = 1e4                                     # past any cost (255 luma levels at most)
+
+    def __init__(self, search, decision=None, mean=None, std=None, choices=tuple(CHOICES)):
+        super().__init__()
+        self.search, self.decision, self.choices = search, decision, tuple(choices)
+        width = len(self.FEATURES)
+        self.register_buffer("mean", torch.zeros(1, width) if mean is None else
+                             torch.as_tensor(mean, dtype=torch.float32).view(1, -1))
+        self.register_buffer("std", torch.ones(1, width) if std is None else
+                             torch.as_tensor(std, dtype=torch.float32).view(1, -1))
+        self.register_buffer("table", torch.tensor([self.CHOICES[name] for name in self.choices]))
+        # cost (N, offsets) @ around + outside = every offset's eight neighbours, (N, 8 * offsets)
+        size = 2 * search.radius + 1
+        steps = [(dy, dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if (dy, dx) != (0, 0)]
+        around = torch.zeros(size * size, len(steps) * size * size)
+        outside = torch.zeros(1, len(steps) * size * size)
+        for k, (dy, dx) in enumerate(steps):
+            for y in range(size):
+                for x in range(size):
+                    column = (k * size + y) * size + x
+                    if 0 <= y + dy < size and 0 <= x + dx < size:
+                        around[(y + dy) * size + x + dx, column] = 1.0
+                    else:
+                        outside[0, column] = self.FAR
+        self.register_buffer("around", around)
+        self.register_buffer("outside", outside)
+        self.grid = (len(steps), size * size)
+
+    def measure(self, previous, current):
+        """(features (N, 6), the search's offset d (N, 2), gated as it gates it)."""
+        search = self.search
+        cost = search.costs(previous, current)                                  # (N, offsets), luma levels
+        zero, best = cost[:, search.no_motion], cost.amin(1)
+        weights = torch.softmax(-search.sharpness * cost, dim=1)
+        far = self.FAR
+        neighbours = (cost @ self.around + self.outside).view(-1, *self.grid)
+        local = neighbours.amin(1) >= cost
+        minima = torch.where(local, cost, far)
+        tied = (minima == best[:, None]).to(cost.dtype).sum(1) >= 2
+        above = torch.where(minima > best[:, None], minima, far).amin(1)
+        second = torch.where(tied, best, above)
+        second = torch.where(second < far, second, cost.amax(1))
+        offset = weights @ search.table                                         # N+2 read at +offset, N at -offset
+        motion = offset / search.fraction                                       # N to N+2
+        if search.still is not None:
+            offset = offset * (zero >= search.still).to(offset.dtype)[:, None]
+        # one `Concat` of six: WebGPU allows 8 storage buffers a kernel by default
+        found = torch.stack([torch.log(zero + 0.01), torch.log(best + 0.01), best / (zero + 0.01), weights.amax(1),
+                             torch.log(1 + (second - best) / (best + 0.01)),
+                             torch.log(1 + (motion * motion).sum(1).sqrt())], 1)
+        return found, offset
+
+    def features(self, previous, current):
+        return self.measure(previous, current)[0]
+
+    def make(self, previous, current, offset, share, weight):
+        """The picture of one choice a tile: N at -share·d, N+2 at +share·d, mixed weight : 1 - weight;
+        `share` and `weight` (N, 1)."""
+        height, width = current.shape[-2:]
+        reach = (offset * share)[:, :, None, None].expand(-1, -1, height, width)
+        weight = weight[:, :, None, None]
+        return weight * warp(previous, -reach) + (1 - weight) * warp(current, reach)
+
+    def candidates(self, previous, current):
+        """{choice: its picture (N, 3, H, W)} for every one of `choices`, and the features."""
+        found, offset = self.measure(previous, current)
+        ones = offset[:, :1] * 0 + 1
+        return {name: self.make(previous, current, offset, ones * self.CHOICES[name][0], ones * self.CHOICES[name][1])
+                for name in self.choices}, found
+
+    def logits(self, previous, current):
+        return self.decision((self.features(previous, current) - self.mean) / self.std)
+
+    def forward(self, previous, current):
+        found, offset = self.measure(previous, current)
+        logits = self.decision((found - self.mean) / self.std)
+        # the winner as a float one-hot: a bool tensor reshaped would run on the provider's CPU
+        winner = (logits >= logits.amax(1, keepdim=True)).to(logits.dtype)
+        picked = (winner @ self.table) / winner.sum(1, keepdim=True)
+        return self.make(previous, current, offset, picked[:, :1], picked[:, 1:])
 
 
 def _zero(conv):

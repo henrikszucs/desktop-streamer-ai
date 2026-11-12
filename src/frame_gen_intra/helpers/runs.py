@@ -36,6 +36,33 @@ LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 
 CONTEXT, AHEAD = 2, -1   # the client's sample: two received frames, and the frame between them
 
+# A recorded video repeats frames where its recorder captured slower than its frame rate: a
+# 30 fps upload of a 15 fps screen capture shows every frame twice. A live capture does not, so
+# a sample whose frames repeat is not one the client would see - N+1 a copy of N makes holding N
+# exact by construction. Each recorded source keeps `steps`, the mean |luma change| between its
+# consecutive source frames, and `valid` keeps a received frame N only where the frames around it
+# all change (the content moves and every frame is new) or none does (the content is still).
+# It is extrapolation's test, unchanged: for received frame n it covers the steps from n-2 to
+# n+2, so it holds for the interpolation sample (n-2, n) -> n-1 and for (n, n+2) -> n+1, and
+# the two problems keep the same runs.
+STEP_LEVEL = 0.25        # mean |luma change| under this between two source frames: the same frame again
+
+
+def raw_steps(frames):
+    """The mean |luma change| between consecutive frames of uint8 (T, H, W, 3) source frames."""
+    luma = np.asarray(frames, dtype=np.float32) @ LUMA
+    return [round(float(v), 4) for v in np.abs(np.diff(luma, axis=0)).mean(axis=(1, 2))]
+
+
+def valid(source, n, received):
+    """Whether received frame `n` of a source makes a sample: always for a drawn clip; for a
+    recording, only if the steps from N-`received` to N+2 all change or none does."""
+    steps = source.get("steps")
+    if steps is None:
+        return True
+    window = [step > STEP_LEVEL for step in steps[max(0, n - received):n + 2]]
+    return all(window) or not any(window)
+
 
 def trim(images, pixels, channels_last=False):
     """Cut `pixels` from every edge of (..., H, W) images, or (..., H, W, C) ones."""
@@ -117,7 +144,7 @@ def changed(previous, current, target, halo):
 def groups(manifest, split, inputs, target, halo):
     """Boolean masks over a split's samples, by name: `all`; `changed` and `unchanged` (N+1
     differs from N or N+2 over the core, by `MOVING_SHARE`); `cursor` (runs cut around the
-    cursor); and one per kind of source (page, desktop, photo, video). `inputs` are the
+    cursor); and one per kind of source (page, desktop, photo, screen, video). `inputs` are the
     samples' (N, 2, h, w, 3) received frames."""
     sources = manifest["splits"][split]["sources"]
     count = len(inputs)

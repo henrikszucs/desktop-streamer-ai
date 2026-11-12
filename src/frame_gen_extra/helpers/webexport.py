@@ -21,7 +21,10 @@ What onnxruntime-web's WebGPU provider will not take, found on notebook 13's gra
   GPU) and graph capture refuses the session. Reshape the floats and compare after;
 - `MaxPool`, `Conv` and `GridSample` run in the provider's own layout, with `Transpose` nodes put
   around them and pushed through their neighbours - onto a bool, if one is next to them (a `Where`
-  choosing on a `GridSample`'s output). Gate the motion rather than pick between pictures.
+  choosing on a `GridSample`'s output). Gate the motion rather than pick between pictures;
+- `F.pad` in any mode but zeros (`replicate`, `reflect`) exports with its pads computed at run
+  time, and the provider gets them wrong - interpolation's pick came out twice the tile's size.
+  Use pads the graph holds as constants: a pool's own `padding`, with `count_include_pad=False`.
 
 A session created with `ort.env.logLevel = "verbose"` and `logSeverityLevel: 0` logs its "Node
 placements" to the console, the nodes on the CPU among them.
