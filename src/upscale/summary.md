@@ -3,6 +3,11 @@
 Reconstructing a higher resolution frame from the one the stream delivered, so a client can
 be sent fewer pixels than it displays.
 
+> **The speed target is 60 fps on a GTX 1660 Ti with 20% to spare**
+> (`reference_60fps.md`): 13.3 ms a frame in the client on that card, which leaves the graph
+> 9.2 ms on the benchmark page at the stream's tile count. That is 0.58 ms a tile for a
+> 1280×720 stream. The told model (notebook 23, float16) meets it only for a 640×360 stream.
+
 > **Status: sixteen notebooks, and one model ready to ship: notebook 8's.** Nothing in
 > desktop-streamer's `src/` calls any of it yet; the client still runs the mock graphs.
 >

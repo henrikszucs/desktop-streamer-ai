@@ -180,16 +180,41 @@ def annotate(info, **fields):
     return info
 
 
-def to_float16(info, filename, models_dir=None):
-    """A half precision copy of an exported graph (weights, input and output)."""
+def to_float16(info, filename, models_dir=None, keep_io_types=False):
+    """A half precision copy of an exported graph: weights and arithmetic in float16.
+
+    By default the input and output are float16 too, since a float16 input is half the
+    upload, which is the point of a benchmark tile fed from the CPU. `keep_io_types=True`
+    keeps them float32 behind a `Cast` at each end. That is the client's case: its tiles are
+    already float32 on the GPU, and the casts cost about 0.4 ms of a 16-tile frame."""
     from onnxruntime.transformers import float16
 
     source = onnx.load(str(info["path"]))
     target = Path(models_dir or MODELS_DIR) / filename
-    # keep_io_types=False: a float16 input is half the upload, which is the point
-    onnx.save(float16.convert_float_to_float16(source, keep_io_types=False), str(target))
+    half = float16.convert_float_to_float16(source, keep_io_types=keep_io_types)
+    # the converter appends the input casts after the nodes that read them
+    _sort_nodes(half.graph)
+    onnx.checker.check_model(half)
+    onnx.save(half, str(target))
     write_metadata(target, {**read_metadata(source), "cpu_ms": None, "precision": "float16"})
     return describe(target)
+
+
+def _sort_nodes(graph):
+    """Put every node after the nodes whose outputs it reads (a stable topological sort)."""
+    known = {value.name for value in graph.input} | {init.name for init in graph.initializer} | {""}
+    nodes = list(graph.node)
+    pending, ordered = list(range(len(nodes))), []
+    while pending:
+        ready = [i for i in pending if all(name in known for name in nodes[i].input)]
+        if not ready:
+            raise ValueError("the graph has a cycle, or reads a value nothing writes")
+        for i in ready:
+            ordered.append(nodes[i])
+            known.update(nodes[i].output)
+        pending = [i for i in pending if i not in ready]
+    del graph.node[:]
+    graph.node.extend(ordered)
 
 
 def to_int8(info, filename, calibration, models_dir=None):

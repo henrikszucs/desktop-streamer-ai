@@ -245,10 +245,13 @@ Also:
 
 | | Result |
 |---|---|
-| default adapter | |
-| high-performance adapter | |
-| shader-f16 available | |
-| decoder | |
+| default adapter | nvidia, turing, NVIDIA GeForce GTX 1660 Ti (also for `high-performance` and `low-power`: Windows already sets chrome.exe to High performance) |
+| high-performance adapter | the same GTX 1660 Ti |
+| shader-f16 available | yes (also `timestamp-query`, `subgroups`); ORT 1.29.0's device has all three |
+| decoder | not checked yet (needs a stream) |
+
+The machine also has an AMD Radeon Vega 10 (integrated, driving the 1920×1080 laptop panel);
+the 1660 Ti drives the 1680×1050 screen.
 
 ### Run 1: the baseline
 
@@ -385,21 +388,81 @@ How to read it:
 
 ## Results
 
+Measured 2026-11-12 on this machine: the server (desktop-streamer `feature/told-upscaler` at
+6e8a993, with P1-P3) ran here, and so did the host. The host was a second Chrome profile
+sharing a 16:9 tab with a 60 fps canvas animation through `getDisplayMedia`, so **host and
+viewer shared the GTX 1660 Ti**. The host asked for 30 fps. Stage times are ms per shown
+frame; every row is the median of 6-9 one-second readings.
+
 | Run | Stream | Tiles | enhance.ms | runs/s | dropped/s | fromFrame | run | toFrame | present | sync | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 baseline | | | | | | | | | | | |
-| 2a interpolate only | | | | | | | | | | | |
-| 2b mock upscaler | | | | | | | | | | | |
-| 3 640×360 | | 4 | | | | | | | | | |
-| 3 960×540 | | 9 | | | | | | | | | |
-| 3 1280×720 | | 16 | | | | | | | | | |
-| 5 lazy clear off | | | | | | | | | | | |
-| 6 high-performance | | | | | | | | | | | |
-| 7 NCHW | | | | | | | | | | | |
+| 1 baseline | 1278×720 | 16 | 65.5 | 15 | 14 | 0.8 | 3.4 | 0.4 | 0.7 | 59.5 | both adapters are the GTX 1660 Ti |
+| 1, a 1540×720 stream | 1540×720 | 20 | 75 | 13 | 17 | 0.7 | 3.5 | 0.4 | 0.6 | 70 | a non-16:9 source costs a column of tiles |
+| 2a interpolate only | 1278×720 | 16 | 17 | 29 | 0 | 0.7 | 0 | 0.6 | 0.8 | 7.7 | keeps up |
+| 2b mock upscaler | 1278×720 | 16 | 6.8 | 30 | 0 | 0.4 | 0.9 | 0.3 | 0.5 | 4.8 | everything around the model at 2× |
+| 3 640×360 | 640×360 | 4 | 16 | 30 | 0 | 0.5 | 2.2 | 0.3 | 0.5 | 12.6 | keeps up; 4.0 ms per tile |
+| 3 852×480 (480p) | 852×480 | 9 | 37.6 | 26.5 | 3.5 | 0.7 | 2.9 | 0.4 | 0.7 | 32.8 | 4.2 ms per tile |
+| 3 1278×720 | 1278×720 | 16 | 65.5 | 15 | 14 | 0.8 | 3.4 | 0.4 | 0.7 | 59.5 | 4.1 ms per tile |
+| 3 1872×1054 (1080p) | 1872×1054 | 36 | 215 | 4.6 | 25 | 0.6 | 3.2 | 0.4 | 0.5 | 212 | 6.0 ms per tile |
+| 5 lazy clear off, 720p | 1278×720 | 16 | 60.4 | 16.5 | 13 | 0.6 | 3.1 | 0.3 | 0.5 | 55.8 | −5 ms |
+| 5 lazy clear off, 1080p | 1872×1054 | 36 | 202 | 4.8 | 25 | 0.5 | 2.8 | 0.3 | 0.5 | 198 | −13 ms |
+| 6 high-performance | | | | | | | | | | | not run: every adapter is already the 1660 Ti (Run 0) |
+| 7 NCHW | | | | | | | | | | | not run in the client: no gain on the graph alone (Run 8) |
+
+The resolution menu has 480p, not 960×540, and the client sizes the stream from the shared
+surface. The tab had to be exactly 16:9 for 720p to come out as 1278×720 (16 tiles); at 1282
+wide it is 20 tiles.
 
 Run 4, the `kernels` list (paste one representative second):
 
 ```
+```
+
+Run 4 in the client, 1278×720 (16 tiles). Profiling was switched on inside the stream worker
+over the DevTools protocol, without a rebuild: the worker's `import()` of ORT's URL returns
+the enhancer's own module, and JSEP reads `env.webgpu.profiling` on every run. Average of
+126 runs, 49.0 ms per frame:
+
+```
+10.78  Conv /Conv_1        3x3 24->24
+10.52  Conv /Conv_2        3x3 24->24
+10.08  Conv /tail/Conv     3x3 24->4
+ 4.98  Conv /skip/conv     5x5 3->12
+ 2.81  Conv /Conv (stem)   3x3 3->24
+ 2.30  Add /Add_1
+ 1.75  Conv /point_1/Conv  1x1
+ 1.69  Conv /point/Conv    1x1
+ 1.17  Add /Add
+ 0.77  Transpose (output)
+ 0.76  Concat
+ 0.65  DepthToSpace
+ 0.58  Add /Add_2
+ 0.14  Transpose (input)
+```
+
+The same kernels as the graph alone, about 15% slower each. The graph alone with the host
+streaming beside it takes 50.9 ms (45.1 ms on an idle GPU), so that 15% is the host sharing
+the GPU, not the client.
+
+Run 4 on the graph alone instead (benchmark page, 16 tiles, ms per run, averaged over 10 runs,
+ORT 1.29.0 default NHWC layout; total 41.7 ms):
+
+```
+ 9.38  Conv /Conv_1        3x3 24->24   Conv2DMatMul
+ 9.34  Conv /Conv_2        3x3 24->24   Conv2DMatMul
+ 8.78  Conv /tail/Conv     3x3 24->4    Conv2DMatMul   <- a sixth of the work, the same time
+ 4.04  Conv /skip/conv     5x5 3->12    Conv2DMatMul
+ 2.26  Conv /Conv (stem)   3x3 3->24    Conv2DMatMul
+ 1.53  Conv /point_1/Conv  1x1 24->24   MatMul
+ 1.51  Conv /point/Conv    1x1 24->24   MatMul
+ 1.08  Add /Add
+ 1.08  Add /Add_1
+ 0.71  Transpose (NHWC -> NCHW, output)
+ 0.68  Concat /Concat
+ 0.59  DepthToSpace
+ 0.54  Add /Add_2
+ 0.14  Transpose (NCHW -> NHWC, input)
+ 0.04  the three condition 1x1 Convs and their Transposes
 ```
 
 Run 5, `GpuDataManager.create` lines per second after warm-up, and their sizes:
@@ -407,13 +470,131 @@ Run 5, `GpuDataManager.create` lines per second after warm-up, and their sizes:
 ```
 ```
 
+`GpuDataManager.create` is logged for every allocation, whether it is served from ORT's free
+list or not, so its rate says nothing about churn. Counting the device's own `createBuffer`
+from inside the worker instead (1278×720, 16 tiles):
+
+```
+67 session runs in 5 s, 67 createBuffer calls, every one 134217728 bytes (the 128 MiB class)
+```
+
+**One 128 MiB buffer is created and destroyed on every frame.** That is the size class the
+94.7 MB activations fall in, and ORT's cache keeps at most 6 free buffers of it. Which
+allocation overflows it is not pinned down: the benchmark page's run of the same graph shows
+no sign of churn, so it may be one the client adds, its output or input. Timed on the
+enhancer's own device, a fresh 128 MiB buffer costs 11.7 ms to create, clear and use once,
+against 0.9 ms for one already made. With
+`--disable-dawn-features=lazy_clear_resource_on_first_use` a frame is 5 ms faster at 16 tiles
+and 13 ms faster at 36, so about half of that cost is the zero-fill and the rest is the
+creation. At 36 tiles every intermediate is above ORT's 160 MB cap and none is cached, which
+is why the client takes 215 ms where the graph alone takes 113.
+
+nvidia-smi during 1080p upscaling: 2.5-3.3 of 6 GB used, 75% GPU busy, power-capped at
+about 60-70 W of 80 W (SM clock 1.7 GHz of 2.1). Memory is not the limit.
+
+### Where a 720p frame goes (1278×720, 16 tiles, 65.5 ms)
+
+| Part | ms | How it was found |
+|---|---|---|
+| the graph's kernels on an idle GPU | 45 | Run 8 |
+| the host sharing the GPU (this setup only) | +4 | 49.0 in the client's kernels; 50.9 for the graph alone beside the host |
+| the 128 MiB buffer remade every frame | ~10 | 11.7 ms per fresh buffer; −5 ms with the clear off |
+| everything around the model at 2× | ~6 | Run 2b's mock, 6.8 ms including its own tiny graph |
+
+So **about 70% of the frame is the model**, 15% is ORT's buffer cache, and 10% is the
+client's own path. Run 3's per-tile cost (4.0-4.2 ms from 4 to 16 tiles, 6.0 at 36) fits the
+same split. The ~25 fps reported at "720p" matches the 480p stream here (852×480, 9 tiles,
+26.5 fps). At 1278×720 this setup shows 15 fps, with the host on the same GPU.
+
+What that ranks, at 16 tiles (estimates from the measurements above, not yet measured in the
+client):
+1. **B2, float16:** the graph goes from 41 to 29 ms of GPU time. It also halves every
+   activation, to 47 MB, which moves them out of the 128 MiB class and probably ends the
+   churn as well.
+2. **A1, the buffer churn:** about 10 ms a frame at 16 tiles and most of the 36-tile cost.
+   Chunk the batch, or use graph capture (A4), which keeps its buffers.
+3. **A retrained tail:** a 1×1 tail instead of 3×3 would save about 7 ms fp32 (the 3×3 tail
+   costs as much as a 24→24 convolution).
+4. B1 (4 input channels) and NCHW are measured losses here. A2 (overlapping frames) cannot
+   help much while the GPU is the limit.
+
+### After B2: the float16 graph in the client
+
+Notebook 23 now also writes `dist/upscale/client/upscale_fp16.onnx`
+(`webexport.to_float16(..., keep_io_types=True)`). It is the same graph with float16 weights
+and arithmetic and a `Cast` at each end, so it takes and gives float32 like `upscale.onnx`,
+and it is within 0.17/255 of it. desktop-streamer ships it beside `upscale.onnx` and fetches
+it on WebGPU when the adapter has `shader-f16` (`urlOf()` in `stream-enhance.js`). Same setup
+as the Results above (host on the same GPU, 30 fps asked):
+
+| Stream | Tiles | float32 ms | float16 ms | runs/s float32 → float16 | float16 stages: run / sync |
+|---|---|---|---|---|---|
+| 640×360 | 4 | 16 | 12.8 | 30 → 30 | 2.2 / 8.9 |
+| 852×480 | 9 | 37.6 | 24 | 26.5 → **30** | 2.7 / 20.2 |
+| 1278×720 | 16 | 65.5 | 41 | 15 → **24** | 4.2 / 34.8 |
+| 1872×1054 | 36 | 215 | 86 | 4.6 → **12** | 2.9 / 81 |
+
+- **It also ends the buffer churn (A1).** Counting the device's `createBuffer` calls: none
+  in 121 runs at 16 tiles and none in 58 runs at 36 (the float16 activations are 47 MB at
+  16 tiles and 107 MB at 36). The 36-tile case is in the same 128 MiB class that churned in
+  float32, so the cause is not only the activation size. What matters here is that it
+  stops.
+- **The kernels at 16 tiles: 34.0 ms**, against 49.0 in float32. The 3×3 24→24
+  convolutions take 7.7 and 7.5 ms, the tail 6.7, the skip 3.1 and the stem 2.0.
+- **What is left at 720p:** 41 ms is 34 of kernels and about 7 of everything around the
+  model (Run 2b's mock path). Graph capture (A4) would save part of the 4 ms ORT spends
+  issuing the work, and that issuing already overlaps the GPU, so it is not worth its
+  constraints now. Chunking (A1) still matters for a GPU without `shader-f16`, which runs
+  the float32 graph and churns from 16 tiles up.
+- **The target is 60 fps with 20% to spare** (`reference_60fps.md`): 13.3 ms a frame on this
+  card, 9.2 of it for the graph. That was measured with the host off this GPU. The told model
+  meets it only for a 640×360 stream.
+- **Next, if 720p has to reach 30 fps on this card:** the model has to come down another
+  ~8 ms. The 3×3 tail is the clearest candidate: in float16 it is 6.7 ms for a sixth of
+  a 24→24 convolution's work. A 1×1 tail would be a `MatMul` at about 1 ms, but it needs
+  retraining.
+
 Run 8, benchmark page (ms per batch):
 
 | Graph | reuse | capture | GPU time (profiled) |
 |---|---|---|---|
-| 4 tiles | | | |
-| 9 tiles | | | |
-| 16 tiles | | | |
+| 4 tiles | 11.38 | 11.26 | 11.10 (2.84 ms per tile) |
+| 9 tiles | 25.53 | 25.27 | 25.12 (2.84 ms per tile) |
+| 16 tiles | 45.07 | 45.05 | 44.47 (2.82 ms per tile) |
+| 36 tiles | 112.83 | 101.55 | 105.77 (3.13 ms per tile) |
+
+Measured 2026-11-12, Chrome 157, ORT Web 1.29.0, every row on the GTX 1660 Ti. The graph is
+`dist/upscale/client/upscale.onnx`, identical to desktop-streamer's
+`feature/told-upscaler` copy. The 1660 Ti is 4.4× slower per tile than the 3090's 0.646 ms.
+- GPU time is almost all of the wall time, and the time per tile stays flat from 4 to 16
+  tiles, so the graph is GPU-bound and linear up to 16 tiles.
+- Graph capture saves nothing up to 16 tiles: ORT's issuing of the work is not the cost.
+- At 36 tiles, `reuse` is 11 ms slower than `capture`, which fits ORT's buffer cache
+  stopping at 160 MB (A1).
+
+Run 7 on the graph alone (16 tiles, `preferredLayout: "NCHW"`): 42.5 ms against 41.7 ms. The
+24→24 convolutions get slower (10.6 ms each), the tail faster (7.2 ms), and the skip slower
+(5.2 ms). NCHW is no gain.
+
+Candidate model fixes on the graph alone, made as equivalent edits of the told graph and
+checked against it with ORT's CPU backend (16 tiles, profiled GPU ms):
+
+| Variant | GPU ms | Output against the graph as it is |
+|---|---|---|
+| as it is | 41.3 | |
+| tail writes 12 channels, no `Concat` | 41.1 | identical |
+| 4 input channels (B1) | 42.8 | identical |
+| float16 inside, float32 at both ends (B2) | **29.0** | max difference 5.8e-4 |
+| all three | 29.7 | max difference 5.8e-4 |
+
+- **B1 makes it worse** here: the 4-channel stem and skip are slower (2.66 and 4.82 ms) than
+  the 3-channel ones. The "3-channel slow path" from the 3090 notes does not show on this
+  GPU.
+- **B2 saves 30%**: every Conv is about 30% faster, and the elementwise operations halve.
+- **ORT's `Conv2DMatMul` costs about the same for any output width up to 24**: 3×3 over 24
+  channels is about 9 ms whether it writes 4, 12 or 24 channels. The tail's cost is its
+  3×3 over 24 input channels, not its output. Making the tail 1×1 (a retrain) would turn
+  it into a `MatMul` at about 1.5 ms.
 
 ## What each result points at
 
