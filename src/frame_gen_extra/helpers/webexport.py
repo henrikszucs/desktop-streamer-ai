@@ -11,6 +11,21 @@ A graph can take more than the two frames: `extra` names inputs of one vector pe
 {name: length}. They come after the frames,
 `[N, length]` float32, and the client feeds them by name like the frames.
 
+What onnxruntime-web's WebGPU provider will not take, found on notebook 13's graph - each passes
+`check_graph` on the CPU and shows only in the browser:
+
+- a node with more than 7 inputs - a `Concat` of eight or more - fails: WebGPU allows 8 storage
+  buffers a kernel by default;
+- a bool tensor's shape cannot be moved there (`Flatten`, `Unsqueeze`, `Transpose`): those nodes
+  run on the CPU, and the GPU waits for a round trip every run (8.2 ms of wall clock for 2.7 of
+  GPU) and graph capture refuses the session. Reshape the floats and compare after;
+- `MaxPool`, `Conv` and `GridSample` run in the provider's own layout, with `Transpose` nodes put
+  around them and pushed through their neighbours - onto a bool, if one is next to them (a `Where`
+  choosing on a `GridSample`'s output). Gate the motion rather than pick between pictures.
+
+A session created with `ort.env.logLevel = "verbose"` and `logSeverityLevel: 0` logs its "Node
+placements" to the console, the nodes on the CPU among them.
+
 Usage:
 
     from helpers import webexport

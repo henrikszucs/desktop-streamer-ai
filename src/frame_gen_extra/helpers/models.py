@@ -40,6 +40,9 @@ client can apply per tile: repeat where nothing moved.
 Where the search is unsure (notebook 10): `Masked` adds a `TwoScale` network's correction to
 the search's N+1, through a gate opened by how much of the change the search's motion leaves
 unexplained.
+
+Carry or repeat (notebook 13): `Decided` picks, per tile, the search's N+1 or `current`, by a
+small network on six numbers the search's own costs give.
 """
 
 import torch
@@ -541,6 +544,95 @@ class Masked(nn.Module):
     def forward(self, previous, current):
         found = self.parts(previous, current)
         return found["search"] + found["gate"] * found["correction"]
+
+
+class Decided(nn.Module):
+    """Per tile, the tile search's N+1 or N, as a small network decides from the search's own
+    costs (notebook 13): one of two sharp pictures, never a blend.
+
+    `features` gives the six numbers of `helpers/decide.py` that come from the search's costs of
+    its 81 offsets and the motion it found - `FEATURES` below, `gap` as the decision reads it
+    (log1p) - so the decision adds no work at the tile's resolution: past the search, every
+    operation is on 81 numbers a tile. They are standardised by `mean` and `std` and handed to
+    `decision`, any module from (N, 6) to a logit (N, 1): over zero, the tile takes the search's
+    N+1, otherwise `current` as it is. The decision gates the motion, as the search's own still
+    gate does - a repeat is a zero motion, and the warp hands `current` back - so it adds nothing
+    at the tile's resolution either.
+
+    `gap` - the next local minimum of the 9x9 cost grid over the best - is found without a sort,
+    to the same number as `decide.features`: the best again if it is tied, else the least local
+    minimum above it, else the highest cost. A local minimum is an offset no dearer than its eight
+    neighbours on the grid, which one fixed `MatMul` gathers (off the grid: `FAR`) - not a
+    `MaxPool`, which the browser's WebGPU provider runs in its own layout, and the transposes into
+    it on its CPU. Beyond the search's operators: that `MatMul`, the reductions and the decision's
+    `Gemm`s, every node on the WebGPU provider - so the graph also runs under graph capture.
+    """
+
+    FEATURES = ("log zero cost", "log best cost", "explained", "peak", "gap", "log motion")
+    FAR = 1e4                                     # past any cost (255 luma levels at most)
+
+    def __init__(self, search, decision, mean, std):
+        super().__init__()
+        self.search, self.decision = search, decision
+        self.register_buffer("mean", torch.as_tensor(mean, dtype=torch.float32).view(1, -1))
+        self.register_buffer("std", torch.as_tensor(std, dtype=torch.float32).view(1, -1))
+        # cost (N, offsets) @ around + outside = every offset's eight neighbours, (N, 8 * offsets)
+        size = 2 * search.radius + 1
+        steps = [(dy, dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if (dy, dx) != (0, 0)]
+        around = torch.zeros(size * size, len(steps) * size * size)
+        outside = torch.zeros(1, len(steps) * size * size)
+        for k, (dy, dx) in enumerate(steps):
+            for y in range(size):
+                for x in range(size):
+                    column = (k * size + y) * size + x
+                    if 0 <= y + dy < size and 0 <= x + dx < size:
+                        around[(y + dy) * size + x + dx, column] = 1.0
+                    else:
+                        outside[0, column] = self.FAR
+        self.register_buffer("around", around)
+        self.register_buffer("outside", outside)
+        self.grid = (len(steps), size * size)
+
+    def measure(self, previous, current):
+        """(features (N, 6), the offset (N, 2) the search reads `current` from, gated as it gates it)."""
+        search = self.search
+        cost = search.costs(previous, current)                                  # (N, offsets), luma levels
+        zero, best = cost[:, search.no_motion], cost.amin(1)
+        weights = torch.softmax(-search.sharpness * cost, dim=1)
+        # compared as floats, never reshaped as bools: onnxruntime-web's WebGPU provider cannot
+        # move a bool tensor's shape (`Flatten`, `Unsqueeze`) and runs those on its CPU
+        far = self.FAR
+        neighbours = (cost @ self.around + self.outside).view(-1, *self.grid)
+        local = neighbours.amin(1) >= cost
+        minima = torch.where(local, cost, far)
+        tied = (minima == best[:, None]).to(cost.dtype).sum(1) >= 2
+        above = torch.where(minima > best[:, None], minima, far).amin(1)
+        second = torch.where(tied, best, above)
+        second = torch.where(second < far, second, cost.amax(1))
+        carry = weights @ search.table                                          # read from: -fraction * motion
+        motion = carry / search.fraction                                        # minus how far the content moved
+        if search.still is not None:
+            carry = carry * (zero >= search.still).to(carry.dtype)[:, None]
+        # one `Concat` of six: WebGPU allows 8 storage buffers a kernel by default
+        found = torch.stack([torch.log(zero + 0.01), torch.log(best + 0.01), best / (zero + 0.01), weights.amax(1),
+                             torch.log(1 + (second - best) / (best + 0.01)),
+                             torch.log(1 + (motion * motion).sum(1).sqrt())], 1)
+        return found, carry
+
+    def features(self, previous, current):
+        return self.measure(previous, current)[0]
+
+    def logit(self, previous, current):
+        """(N, 1): over zero, the tile takes the search's N+1."""
+        return self.decision((self.features(previous, current) - self.mean) / self.std)
+
+    def forward(self, previous, current):
+        found, carry = self.measure(previous, current)
+        # a gate on the motion, never a bool picked between pictures: a `Where` there would have
+        # its mask moved into `GridSample`'s layout by a `Transpose` the WebGPU provider runs on its CPU
+        take = (self.decision((found - self.mean) / self.std) > 0).to(carry.dtype)
+        height, width = current.shape[-2:]
+        return warp(current, (carry * take)[:, :, None, None].expand(-1, -1, height, width))
 
 
 def warp(picture, offsets, mode="bilinear"):

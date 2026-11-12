@@ -7,12 +7,14 @@ one arrives. Received frames N−2 and N in, the unsent frame N+1 out. Interpola
 extrapolation adds none. desktop-streamer's client already schedules it this way: an
 extrapolated frame is shown half a frame interval after the frame it came from.
 
-> **Status: thirteen notebooks on a set that is mostly real video, and a graph that passes
-> desktop-streamer's client tests in place of its mock.**
-> `dist/frame_gen_extra/extrapolate2x_tilesearch_r4_s2.onnx` has the mock's contract exactly -
-> `previous`, `current` and `output`, each `[N, 3, H, W]` with `N`, `H`, `W` symbolic - and all 14
-> tests of desktop-streamer's `tests/enhance.test.js` pass with it as `extrapolate.onnx`. Not yet
-> run in a live session.
+> **Status: thirteen notebooks on a set that is mostly real video, and two graphs that pass
+> desktop-streamer's client tests in place of its mock.** In `dist/frame_gen_extra/`:
+> `extrapolate2x_tilesearch_r4_s2.onnx`, the tile search, and
+> `extrapolate2x_tilesearch_decide_r4_s2.onnx`, the search with a learned decision per tile to
+> carry its motion or repeat (notebook 13) - the better of the two. Each has the mock's contract
+> exactly - `previous`, `current` and `output`, each `[N, 3, H, W]` with `N`, `H`, `W` symbolic -
+> and all 16 tests of desktop-streamer's `tests/enhance.test.js` pass with either as
+> `extrapolate.onnx`. Neither has run in a live session yet.
 >
 > **The set is two thirds recorded** (notebook 0): screen captures from YouTube-8M's computer
 > categories, picked by eye (kind `screen`, 93 videos, mostly 24-30 fps), other video at 50-60 fps
@@ -45,8 +47,10 @@ extrapolated frame is shown half a frame interval after the frame it came from.
 > alike (notebook 12).
 >
 > **What learning does add is a decision** (notebook 13): per tile, the search's N+1 or N - a
-> 500-weight network on twelve numbers the search mostly computes - **+0.22 dB on the moving
-> tiles** (95% over videos +0.05 to +0.48).
+> 500-weight network on twelve numbers the search mostly computes - +0.22 dB on the moving
+> tiles (95% over videos +0.05 to +0.48). **In the graph**, on the six of them that come from the
+> search's own costs, **+0.18 dB (+0.02 to +0.39) for 7% more time**: 2.75 ms a 1080p frame in
+> Chrome's WebGPU against the search's 2.58.
 >
 > **Searching per block ties, and helps the recordings** (notebook 9): 3-D recursive search, a TV's
 > block motion estimator, is +0.04 dB overall - +0.40 on video, +0.26 on screens, −0.5 to −0.8 on
@@ -132,7 +136,10 @@ Run in order, from this folder:
   on the drawn tiles only, on the recorded only, and on both (notebook 10), scored by kind.
 - `13_extrapolate_decide.ipynb` — **carry or repeat, decided per tile**: twelve features of the
   search's work and the stream's bitrate (`helpers/decide.py`), the search's gate raised, and
-  logistic regression and a small network trained on every kind, the drawn and the recorded.
+  logistic regression and a small network trained on every kind, the drawn and the recorded. Then
+  the decision on the six features the search's costs give, measured in the graph
+  (`models.Decided`), checked against the table's on real tiles, timed in the browser and exported
+  to `dist/`.
 
 The code the notebooks share lives in `helpers/`. `sources.py`, `degrade.py` and `metrics.py`
 are copies of upscale's. `scenes.py` is the drawn desktop motion. `recorded.py` lists the screen
@@ -170,7 +177,8 @@ tiles (capped at 50 dB) for the later notebooks.
 | pyramid + stop decision | 8 | a coarse-to-fine sub-pixel search, carried whole, with a history table | a table | +0.15 dB |
 | 3-D recursive search | 9 | a motion per 16 px block from a few penalised candidates | no | +0.04 dB (+0.40 video, +0.26 screens) |
 | masked network | 10 | the search's N+1 plus a correction through a gate opened where the search is unsure | yes | +0.06 dB |
-| carry-or-repeat decision | 13 | per tile, the search's N+1 or N, chosen by a small network on the search's measurements | 500 weights | **+0.22 dB** |
+| carry-or-repeat decision | 13 | per tile, the search's N+1 or N, chosen by a small network on the search's measurements and the bitrate | 500 weights | **+0.22 dB** |
+| **search + decision** (published) | 13 | the same on the six numbers the search's costs give, inside the graph | 400 weights | **+0.18 dB**, 2.75 ms a 1080p frame |
 ## The data
 
 **A sample is received frames N−2 and N, and the target N+1** - every second frame received,
@@ -441,14 +449,44 @@ video) and nothing on screens, where the search and repeat are within half a dB.
 to learn from. Twelve numbers the search mostly computes and a 500-weight network: the one learned
 piece worth putting beside the search.
 
+**In the graph** (`models.Decided`): the client's graph has the two frames only, so not the stream's
+bitrate and loop filter; and the four features measured on the picture (the residual, the cells,
+the changed pixels and their strength) took a full-resolution pass that cost 8.5 ms of GPU a 1080p
+frame in the browser, more than the search itself. The six that come from the search's 81 costs
+and its motion are enough:
+
+| moving validation tiles, ≤ 50 dB | all | vs the search | 95% over videos | to the search |
+| --- | --- | --- | --- | --- |
+| small network, every kind, all twelve | 39.03 | +0.22 | +0.05 to +0.48 | 60% |
+| without the stream's two (ten) | 38.97 | +0.17 | +0.02 to +0.38 | 79% |
+| **on the search's costs alone (six), published** | **38.99** | **+0.18** | +0.02 to +0.39 | 90% |
+
+The six are computed in the graph from the costs the search already has - `gap`'s next local
+minimum without a sort, by one fixed `MatMul` that gathers every offset's neighbours - and match
+`decide.features` on real validation tiles to 1e-6, with the same decision on all 880 checked. The
+decision gates the motion as the search's own still gate does, so a repeated tile is `current` as
+it is. In Chrome's WebGPU on the RTX 3090, one 1080p frame (36 tiles):
+
+| graph | kernels | GPU ms | wall ms | with graph capture |
+| --- | --- | --- | --- | --- |
+| published search | 32 | 2.51 | 2.58 | 2.41 |
+| **search + decision** | 76 | 2.67 | **2.75** | 2.57 |
+
+Every node is on the WebGPU provider. Its first forms were not, and taught three rules now in
+`helpers/webexport.py`: no node of more than seven inputs; no `Flatten`, `Unsqueeze` or `Transpose` of
+a bool tensor (each runs on the CPU, and the GPU waits for it every run: 8.2 ms of wall clock for 2.7
+of GPU); and no bool next to a node the provider runs in its own layout (`MaxPool`, `GridSample`).
+
 ## In desktop-streamer
 
-`extrapolate2x_tilesearch_r4_s2.onnx` copied over the client's
-`src/client/web/media/models/extrapolate.onnx` passes all 14 tests of its
+`extrapolate2x_tilesearch_decide_r4_s2.onnx` - or the search alone,
+`extrapolate2x_tilesearch_r4_s2.onnx` - copied over the client's
+`src/client/web/media/models/extrapolate.onnx` passes all 16 tests of its
 `tests/enhance.test.js`: two inputs, `[N, 3, H, W]` with the symbolic names it reads, and the
-symbolic dimensions patched to a fixed shape for WebGL. It has been checked against torch at
-36 and 4 tiles of 328×188 and at one tile of 64×32 (a frame smaller than a tile). What the
-client does with it, as the code stands:
+symbolic dimensions patched to a fixed shape for WebGL. Each has been checked against torch at
+36 and 4 tiles of 328×188 and at one tile of 64×32 (a frame smaller than a tile). The one to copy
+is the decision's: +0.18 dB for 7% more time. What the client does with either, as the code
+stands:
 
 - with **extrapolate** on alone, a received frame is shown at 0 and the generated one at ½ of
   the frame interval - frame N+1 of the 2x stream, which is what the graph makes;
@@ -496,15 +534,13 @@ the mock back.
 
 ## Next
 
-1. **Run the published search in a live session**, and time it on a laptop iGPU - the 3090 numbers
-   are a floor. With a real 60 fps recording of the session kept as a test set.
-2. **Put the carry-or-repeat decision in the graph** (notebook 13): its twelve features are the
-   search's own numbers, and a 500-weight network is nothing beside it - +0.22 dB, and no state to
-   keep between frames.
-3. **Fix the two client cases the graph does not fit**: offer extrapolate only on WebGPU, and either
+1. **Run the search with its decision in a live session** (`extrapolate2x_tilesearch_decide_r4_s2.onnx`),
+   and time it on a laptop iGPU - the 3090 numbers are a floor. With a real 60 fps recording of the
+   session kept as a test set.
+2. **Fix the two client cases the graph does not fit**: offer extrapolate only on WebGPU, and either
    drop the ⅔ placement when interpolate is also on or export a graph that carries a third of the
    motion for it.
-4. **Skip still tiles in the client.** The graph returns them unchanged, but still runs the search on
+3. **Skip still tiles in the client.** The graph returns them unchanged, but still runs the search on
    them; comparing the two received tiles first would save that work.
 
 Sibling problems: `../upscale/summary.md`, `../frame_gen_intra/summary.md`.
