@@ -7,9 +7,16 @@ be sent fewer pixels than it displays.
 > (`reference_60fps.md`): 13.3 ms a frame in the client on that card, which leaves the graph
 > 9.2 ms on the benchmark page at the stream's tile count. That is 0.58 ms a tile for a
 > 1280×720 stream. The told model (notebook 23, float16) meets it only for a 640×360 stream.
+> Notebook 24's told `q24` (`client/upscale_fast.onnx`) is built for the 1280×720 stream:
+> **7.1-7.6 ms predicted** at 16 tiles. That figure is predicted from the RTX 3090 and has not
+> been measured on the card. It keeps 69% of the told model's SSIM-Y gain (see "60 fps on a
+> GTX 1660 Ti"), with bicubic's colour.
 
-> **Status: sixteen notebooks, and one model ready to ship: notebook 8's.** Nothing in
-> desktop-streamer's `src/` calls any of it yet; the client still runs the mock graphs.
+> **Status: twenty-four notebooks. desktop-streamer runs notebook 23's told 24×2**
+> (`dist/upscale/client/upscale.onnx`, and its float16 twin on a GPU with `shader-f16`), told
+> each frame's slice QP, loop filter and frame type. Notebooks 17–23, which made it, are not
+> written up below yet. The sections below were written up to notebook 16, when notebook 8's
+> model was the one to ship.
 >
 > **The best model overall is notebook 8's**: residual blocks correcting luma only (28,120
 > operations an LR pixel), trained with desktop screens in the data and told the host's
@@ -206,10 +213,21 @@ Run in order, from this folder:
   where it mattered. The leaky ReLU is what pays, and only on the 32-16: it ends the 32-16's
   seed lottery, and the notebook publishes it as the cheap tier. See "Distillation, edges and
   a leaky ReLU".
+- `17_upscale_qp.ipynb` to `23_upscale_qp_export.ipynb` — **the told model the client runs:**
+  the stream's QP, then the slice QP, loop filter and frame type the client reads off every
+  frame, trained into notebook 8's body (22) and exported for desktop-streamer as
+  `dist/upscale/client/upscale.onnx` and its float16 twin (23). Not written up here yet; each
+  notebook's last section has its results.
+- `24_upscale_fast.ipynb` — **a told model for 60 fps at a 1280×720 stream on a GTX 1660
+  Ti**, as a drop-in for notebook 23's graph. It measures every layer of the 1660 Ti's cost
+  table again on the RTX 3090 to predict that card from this one. It then trains a body that
+  runs at a quarter of the pixels, and exports `client/upscale_fast.onnx` and its float16
+  twin. See "60 fps on a GTX 1660 Ti".
 
 The notebooks share their code through `helpers/`, so each one reads as a short list of
 steps: `models.py` holds the bicubic skip and the models built on it (`PlainUpscaler`,
-`ReparamUpscaler`, `LumaUpscaler`, `ToldLuma`; `slope` makes any of the last two leaky),
+`ReparamUpscaler`, `LumaUpscaler`, `ToldLuma`, `FastLuma`; `slope` makes any of the last
+three leaky),
 `training.py` the loaders, the training loop (`teacher=` to distil), scoring and checkpoints,
 and `speed.py` the timing.
 
@@ -1197,6 +1215,72 @@ budget). On notebook 15's whole clips it is the cheap tier (see "Bits against co
 `models.ToldLuma` moved into `helpers/models.py` for this notebook; notebook 8 still defines
 its own copy.
 
+## 60 fps on a GTX 1660 Ti (`24_upscale_fast.ipynb`)
+
+Notebook 23's told 24×2 takes 34.6 ms for a 1280×720 stream's 16 tiles on the GTX 1660 Ti.
+The reference allows the graph 9.2 ms (`reference_60fps.md`). Notebook 24 makes a drop-in
+that fits: the same `input`, `condition` and `output`, the same 4 px halo, and a float16 twin.
+It was built on the RTX 3090 alone. The 1660 Ti is predicted by timing every layer of that
+card's cost table again on the 3090 and charging each kernel its kind's ratio (4.0-4.8 for a
+3×3 reading up to 24 channels, 6.2 at 32, about 7 for a 1×1, 3.5 for an `Add`, 4.6 for the
+output path). That puts the told graph at 36.0-37.3 ms against its measured 34.6. A model is
+held to 8.3 ms predicted, 10% under the 9.2.
+
+What made room:
+
+- **Nothing fits at the LR pixels.** The bicubic skip (0.17 ms a tile on the 1660 Ti) and the
+  output path at full size (0.15) take two thirds of the budget, so a single 3×3 stem and a 1×1
+  tail already predict 9.8 ms. A body at **a quarter of the pixels** fits: a 4×4 stride-2 stem
+  makes one feature vector for each 2×2 LR cell, one residual block (3×3, then 1×1) works
+  there, a 1×1 tail writes the cell's 16 luma values, and one `DepthToSpace` by 4 makes the
+  picture. It reaches 3 LR px, inside the client's 4.
+- **The skip shrinks.** Bicubic for a 2×2 cell is one 6×6 stride-2 convolution, 3 → 48
+  (`models.QuarterBicubicSkip`, exact). Without its outer ring of taps, which weigh 0.023 in
+  bicubic's kernel, it is a 4×4 at half the cost (`models.truncated_quarter_skip`). Frozen,
+  its colour is bicubic's to 0.01 dB of U and V PSNR. The tail's rows are written once per
+  colour instead of a `Concat`.
+
+On notebook 21's 9,628 validation patches; a model with two seeds is their mean (0.0001-0.0003
+apart). The network adds the same value to R, G and B, so a model's colour (U, V) is its
+skip's. The 1660 Ti figures are predicted, central / conservative, from the candidate graphs
+timed in one session, except the told model's:
+
+| | ssim-y | luma dB | U / V dB | over bicubic | MAC / LR px | 1660 Ti, 16 tiles |
+|---|---|---|---|---|---|---|
+| bicubic | 0.9045 | 33.55 | 43.99 / 43.93 | | | |
+| told 24×2 (23, ships) | 0.9289 | 35.07 | 44.03 / 43.97 | +0.0243 / +1.52 | ~13,000 | 34.6 ms, measured |
+| **q24, frozen 4×4 skip (published)** | **0.9212** | **34.47** | **44.00 / 43.94** | **+0.0167 / +0.92** | 1,824 | **7.6 / 7.8** |
+| q24, exact 6×6 skip | 0.9213 | 34.51 | 44.00 / 43.95 | +0.0167 / +0.96 | 1,824 | 8.7 / 8.9 |
+| q24, 4×4 skip trained | 0.9214 | 34.43 | 43.04 / 43.23 | +0.0168 / +0.87 | 1,824 | 7.6 / 7.8 |
+| q32, 4×4 skip trained | 0.9229 | 34.55 | 43.03 / 43.26 | +0.0184 / +1.00 | 3,072 | 8.2 / 9.1 |
+| q20, 4×4 skip trained | 0.9197 | 34.34 | 43.06 / 43.22 | +0.0152 / +0.78 | 1,320 | 7.2 / 7.3 |
+
+- **The published graph fits, by prediction.** Timed again beside the told 24×2 (1.35
+  against 6.65 ms on the 3090), it predicts 7.1 ms central and 7.3 conservative, and 7.0 ms
+  scaled by the told graph's measured 34.6. With the 2.2-4.1 ms the client spends around a
+  model, that is 9-12 ms a frame against 13.3.
+- **It keeps about two thirds of the told 24×2's gain** for a fifth of its 3090 time: 69% of
+  the SSIM-Y and 61% of the luma dB, and all of bicubic's colour. It keeps three quarters on
+  x264's frames and three fifths on NVENC's.
+- **The skip has to stay frozen.** Trained with the rest, under a loss that is 84% luma
+  SSIM, it gives up about 1 dB of U and V - colour worse than bicubic's - and buys nothing:
+  the same SSIM-Y, 0.04 dB less luma. Frozen, it is within 0.04 dB of luma of the exact 6×6
+  skip, with the same colour, for the 1.1 ms that would take q24 over the bar.
+- **Four channels of width are worth about 0.0016 SSIM-Y.** q32 is inside the 9.2 ms by the
+  central prediction and outside it by the conservative one; only the card can say which.
+  Smaller does not pay: about 3.1 ms of q24's time is the contract's fixed part (casts,
+  layout transposes, `DepthToSpace`, the skip), and q20 saves 0.2 ms for 0.0017 SSIM-Y.
+- Notebook 23's checks all pass:
+  - the graph computes the model to 1e-6 at every condition;
+  - the float16 twin is within 0.16/255;
+  - a 1280×720 frame cut into the client's tiles matches the whole frame to 6e-7;
+  - graph capture accepts it, so no node runs on the CPU.
+
+**Not yet measured on the GTX 1660 Ti, and its pictures not yet looked at** (the body works on
+2×2 cells, and a faint pattern on that grid is something SSIM-Y need not show). The b16 graph
+`upscale_fast_q24_frozen_skip_fp16_tile320x180_b16.onnx` is ready for Run 8 of
+`bottlenecks_gtx1660ti.md`.
+
 ## Tiling geometry
 
 Inference on the page runs on fixed tiles, not on frames: one pinned input size, one
@@ -1570,17 +1654,24 @@ decide.
 
 ## Next
 
-- **Ship notebook 8's graph to desktop-streamer.** Export it as the client's `upscale.onnx`
-  under the mock's contract (float32 NCHW, `N`, `H`, `W` symbolic, one `input`, one
-  `output`), replacing the mock; the client already cuts 328×188 tiles and batches them.
-  Measure it there, in the real page, on the RTX 3090 and on a laptop iGPU - the 3.9 ms is
-  this page's number on this card.
+- **Measure notebook 24's q24 on the GTX 1660 Ti, and look at its pictures**: Run 8 of
+  `bottlenecks_gtx1660ti.md` with `upscale_fast_q24_frozen_skip_fp16_tile320x180_b16.onnx`
+  (at most 9.2 ms), then the client with
+  `upscale_fast.onnx` / `upscale_fast_fp16.onnx` in place of `upscale.onnx` /
+  `upscale_fp16.onnx` (`enhance.ms` at most 13.3). If the card has the room, train q32 with
+  the frozen skip: about +0.0015 SSIM-Y.
+- **Let the client choose its upscaler by what the GPU affords**, rather than replace
+  notebook 23's told 24×2 with q24 everywhere: the 3090 runs the told graph at 16 tiles in
+  6.9 ms.
+- **Write up notebooks 17–23 here.**
+- ~~**Ship notebook 8's graph to desktop-streamer.**~~ Done differently: notebook 23's told
+  24×2 (notebook 22's model) replaced the mock as the client's `upscale.onnx`.
 - **Publish notebook 8's blind model** beside the told one, and drop the 0.2 and 1.0 bpp
   told graphs (four of its seven files), which can only be worse than the 0.46 one. Fold the
   second seed and the two checks under "What a told graph needs" into the notebook.
-- **Decide whether a fallback tier is needed** from the iGPU measurement: if notebook 8's
-  model misses the frame budget there, notebook 16's leaky luma 32-16 (2.8 ms here, already
-  measured on whole clips) is the one to ship beside it, under the same contract.
+- ~~**Decide whether a fallback tier is needed**~~: the GTX 1660 Ti showed one is (the told
+  24×2 runs a 1280×720 stream at about 27 fps there). Notebook 24's told q24 is that tier,
+  under the client's told contract, which notebook 16's blind leaky 32-16 does not have.
 - **Compare against notebook 8's model, not notebook 4's**, in notebooks 11–14: each was
   written when notebook 4's was the best, and it no longer is.
 - **Look at photos on whole clips**: every model trained with screens is behind notebook

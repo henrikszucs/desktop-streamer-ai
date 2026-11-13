@@ -71,6 +71,9 @@ const contexts = new Map();
 let profileTotal = 0;
 let profileRecords = 0;
 let profileCollecting = false;
+// The same nanoseconds by kernel - operator, node and shader program - so a graph of one
+// layer can be told apart from the casts and layout transposes the runtime puts around it.
+const profileByKernel = new Map();
 
 const onProfilingData = function(data) {
     if (!profileCollecting) {
@@ -83,6 +86,8 @@ const onProfilingData = function(data) {
     if (Number.isFinite(start) && Number.isFinite(end) && end >= start) {
         profileTotal += end - start;
         profileRecords += 1;
+        const key = [data["kernelType"], data["kernelName"] ?? data["kernelId"], data["programName"]].join(" | ");
+        profileByKernel.set(key, (profileByKernel.get(key) ?? 0) + end - start);
     }
 };
 
@@ -603,6 +608,7 @@ const profileGpu = async function(once, release, settle, runs) {
     }
     profileTotal = 0;
     profileRecords = 0;
+    profileByKernel.clear();
     profiling.mode = "default";
     profileCollecting = true;
     try {
@@ -625,7 +631,11 @@ const profileGpu = async function(once, release, settle, runs) {
         console.warn("no timestamp records - this adapter cannot time its own kernels");
         return null;
     }
-    return { ms: profileTotal / runs / 1e6, kernels: profileRecords / runs };
+    const byKernel = {};
+    for (const [key, ns] of profileByKernel) {
+        byKernel[key] = ns / runs / 1e6;
+    }
+    return { ms: profileTotal / runs / 1e6, kernels: profileRecords / runs, byKernel: byKernel };
 };
 
 // The three primitives a run is made of, over one context. Shared with the probe below
@@ -774,6 +784,8 @@ const benchmark = async function(entry, provider, location, mode, seconds) {
             batch: entry["batch"],
             gpuMs: gpu ? gpu["ms"] : null,
             gpuKernels: gpu ? gpu["kernels"] : null,
+            // ms per run of each kernel, by "operator | node | program"
+            gpuByKernel: gpu ? gpu["byKernel"] : null,
             checksum: value,
         };
     } finally {

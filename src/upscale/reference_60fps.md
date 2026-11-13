@@ -45,6 +45,26 @@ Float16 (`dist/upscale/client/upscale_fp16.onnx`, which the client runs on a GPU
 Only a 640×360 stream upscaled to 1280×720 reaches 60 fps on the reference, with 1.1 ms to
 spare.
 
+## A model built for it (notebook 24) - predicted, not measured on the 1660 Ti
+
+Notebook 24's told `q24` (`dist/upscale/client/upscale_fast.onnx` and `upscale_fast_fp16.onnx`)
+is a drop-in for the told 24×2: the same inputs, output and 4 px halo. Its body runs at a
+quarter of the pixels: a 4×4 stride-2 stem, one residual block, and a 1×1 tail writing each
+2×2 cell's 16 luma values. Its colour comes from a frozen 4×4 stride-2 skip: bicubic without
+its smallest outer taps, within 0.01 dB of bicubic's colour. Its 1660 Ti time below is
+**predicted from the RTX 3090** (see the next section), because it has not run on the card
+yet:
+
+| Stream | Tiles | Graph alone, float16 | 3090, measured | Predicted on the 1660 Ti |
+|---|---|---|---|---|
+| 1280×720 | 16 | `upscale_fast_q24_frozen_skip_fp16_tile320x180_b16.onnx` | 1.35-1.41 ms (told 24×2: 6.65-6.95 in the same sessions) | **7.1-7.5 ms** (7.3-7.7 with the largest ratios; 7.0 scaled by the told graph's measured 34.6) |
+
+That is inside the 9.2 ms budget, and inside the 8.3 ms that notebook 24 held it to while it
+is only predicted. On the 9,628 validation patches it scores 0.9212 SSIM-Y and 34.47 dB luma,
+with bicubic's colour. The told 24×2 scores 0.9289 and 35.07, and bicubic 0.9045 and 33.55,
+so q24 keeps 69% of the told model's SSIM-Y gain. To confirm it, run "Checking a model
+against it" below with the b16 graph above.
+
 ## What a layer costs
 
 Float16, per 328×188 tile, at full clock: single-layer graphs with random weights, 16 tiles a
@@ -83,6 +103,31 @@ In kernel time, after the 12%:
 - **854×480 (1.02 ms a tile, so 0.91 of kernels):** about 0.59 for the network, or a stem,
   two 3×3 layers at 12 channels in and a 1×1 tail.
 - **640×360:** the told 24×2 model fits as it is.
+
+## Predicting the 1660 Ti from the RTX 3090
+
+Notebook 24 measured every layer of the table above again on the RTX 3090 (2026-11-13,
+Chrome 157, ORT Web 1.29.0, the same single-layer graphs, the layer's own kernels from the
+benchmark page's `gpuByKernel`). The two cards do not differ by one factor:
+
+| Kernel | 1660 Ti over 3090 | Rows behind it |
+|---|---|---|
+| `Conv2DMatMul` (3×3, 5×5) reading up to 24 channels | 4.0-4.8 | 3/4/8/12/16/24 in, the 5×5 skip |
+| `Conv2DMatMul` reading 32 channels | 6.2 | 3×3 32→32: the 3090 pays 5% over 24 in, the 1660 Ti 37% |
+| `MatMul` (a 1×1) | 6.8-7.0 | 1×1 16-24 |
+| `GroupedConv` (depthwise) | 1.7-2.4 | depthwise 16-24 |
+| `Add` | 3.3-3.6 | 12 and 24 channels |
+| `Concat`, `DepthToSpace`, `Transpose`, `Cast` | 4.6 | the told graph's output path |
+
+On the 3090 a graph's page time is its kernels plus 1%; on the 1660 Ti, plus 13%. So a graph's
+1660 Ti page time is predicted as **1.13 × the sum of its 3090 kernels, each times its kind's
+ratio**. With the typical ratios this puts the told 24×2 at 16 tiles at 36.4 ms; with the
+largest ratio of each kind (and 6.2 for any convolution reading 28 or more channels), at
+37.7 ms. It measured 34.6, so both estimates come out 5-9% high.
+
+A prediction is not a measurement: a kernel the table does not have (a stride-2
+convolution, a 3×3 over a quarter of the pixels) borrows its kind's ratio. Notebook 24 holds
+a model to 8.3 ms predicted, 10% under the 9.2 ms, until it is measured on the card.
 
 ## Checking a model against it
 
