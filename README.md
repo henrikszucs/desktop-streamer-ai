@@ -5,27 +5,41 @@ between or after the ones that arrive. A `uv`-managed Python project, separate f
 application, [desktop-streamer](https://github.com/henrikszucs/desktop-streamer) — nothing in
 its `src/` calls it yet. It used to be that repo's `model/` folder, and its history came along.
 
-Three problems, one folder each, each with its own `summary.md` - and beside them `mock/`,
-which is not a problem but the three stand-ins the client runs today (see below):
+Two top-level folders. **`src/`** is the source: the code, the notebooks that train and
+measure, and the data and checkpoints they leave behind. **`dist/`** is the output: the
+finished models, one subfolder per problem, written by the notebooks' export cells and
+nothing else. Beside them, **`datasets/`** holds the data, never committed: the public
+benchmarks every problem can draw on in `datasets/raw/`, downloaded by
+[`datasets/download.py`](datasets/download.py) - and desktop screens, drawn by
+[`datasets/screens.py`](datasets/screens.py) - and beside it one folder per problem for what
+that problem's preprocessing makes of them (`datasets/upscale/`, `datasets/frame_gen_extra/`, `datasets/frame_gen_intra/`).
+
+Three problems, one folder each under `src/`, each with its own `summary.md` - and beside
+them `src/mock/`, which is not a problem but the three stand-ins the client runs today (see
+below):
 
 | Folder | Problem | State |
 | --- | --- | --- |
-| [`upscale/`](upscale/summary.md) | more pixels out than in | a static baseline, three learned models and a strategy sweep |
-| [`frame_gen_intra/`](frame_gen_intra/summary.md) | interpolate between two frames | not started |
-| [`frame_gen_extra/`](frame_gen_extra/summary.md) | extrapolate past the newest frame | not started |
+| [`src/upscale/`](src/upscale/summary.md) | more pixels out than in | fifteen notebooks: static baselines, nine ways to build a model, host hints, and the bits-against-compute trade-off; nothing shipped to the client yet |
+| [`src/frame_gen_intra/`](src/frame_gen_intra/summary.md) | 2x frame generation by interpolation: the unsent frame between two received ones, shown half an interval late | five notebooks on extrapolation's run set, two thirds recorded: static baselines, extrapolation's tile search made two-sided (+2.40 dB over the mock's mean on the client's moving whole tiles - +7.5 on photos, +6.8 on drawn pages, +0.9 on video, +0.5 on screens - 3.3 ms a 1080p frame in Chrome's WebGPU), and a per-pixel pick on top (+0.11 more, on the recordings, for 3.4 times the time); both graphs pass desktop-streamer's client tests in place of its mock; nothing learned beats the search - a network on top, or extrapolation's per-tile decision among six pictures the search makes (+0.00) - and a ±16 px search is +0.22 for 2.7 times the time |
+| [`src/frame_gen_extra/`](src/frame_gen_extra/summary.md) | 2x frame generation without latency: the frame between two received ones, made before the next arrives | thirteen notebooks on a run set two thirds recorded (YouTube-8M screen captures and 50-60 fps video, beside drawn desktop scenes): static baselines, networks that hedge, and a tile search built from fixed convolutions (+3.6 dB over repeating the frame on changed 80 px samples, +2.7 on whole client tiles - +7.3 on photos, +1.4 on screens, +0.7 on video - 2.3 ms a 1080p frame in Chrome's WebGPU) that passes desktop-streamer's client tests in place of its mock, which scores 4.1 dB below repeating; on a real screen most of what changes is not motion - only a quarter of the changed screen tiles hold one motion of the whole tile; no network that draws pixels or motion beats the search - one behind its confidence mask adds +0.06 dB, 3-D recursive search per block +0.04, each at 14 times the work; a learned per-tile choice to carry the motion or repeat adds +0.22 dB on moving tiles, and +0.18 inside the graph on the search's own costs alone, for 7% more time (2.75 ms a 1080p frame) - published beside the search, both passing the client's tests |
 
-## The mock graphs the client runs
+## The graphs the client runs, and their mocks
 
-`mock/make_mock_models.py` writes the three graphs desktop-streamer's
-`src/client/web/media/models/` holds - `upscale.onnx`, `interpolate.onnx`,
-`extrapolate.onnx` - which the client's enhancement menu runs through ONNX Runtime Web
-(`src/client/web/src/room/stream-enhance.js` there). They are
-stand-ins, not models: the smallest ONNX graph with the shape of the real thing and real GPU
+desktop-streamer's `src/client/web/media/models/` holds the graphs the client's enhancement
+menu runs through ONNX Runtime Web (`src/client/web/src/room/stream-enhance.js` there), all
+trained here now: `upscale.onnx` (`src/upscale/`, notebook 23), `interpolate.onnx`
+(`dist/frame_gen_intra/interpolate2x_tilesearch_r4_s2.onnx`) and `extrapolate.onnx`
+(`dist/frame_gen_extra/extrapolate2x_tilesearch_decide_r4_s2.onnx`), and the `3x` twins of the
+two frame generators the client runs when both are on (`interpolate3x_tilesearch_r4_s2.onnx`,
+`extrapolate3x_tilesearch_decide_r4_s2.onnx`). `src/mock/make_mock_models.py` writes the
+stand-ins they replaced, and only over the graphs it is named (`--upscale`, `--interpolate`,
+`--extrapolate`). The mocks are stand-ins, not models: the smallest ONNX graph with the shape of the real thing and real GPU
 work in between, computing something that leaves the picture right (an identity convolution
 and a bilinear ×2; the mean of two frames; their linear extrapolation), so the client
 pipeline could be built and timed before any trained weights exist. The client never hands a
 graph a whole frame: it cuts it into 328×188 tiles (a 320×180 step with a 4 pixel halo, the
-geometry `upscale/webexport.py` measured), runs every tile of a frame as one batch, and
+geometry `src/upscale/helpers/tiles.py` measured), runs every tile of a frame as one batch, and
 merges the kept centres back - so a model has to be right on a tile of that size, read no
 further than the halo, and take a batch. The generator's docstring holds what the runtime's
 WebGPU provider charges for the operators the mocks could have been built from, which is
@@ -37,8 +51,8 @@ channel tensor: the client would pay a copy and the graph a `Slice` for it), `ou
 `[N, 3, H, W]` or twice it for the upscaler.
 
 ```
-uv run mock/make_mock_models.py                 # into ../desktop-streamer, checked out beside this repo
-uv run mock/make_mock_models.py <models folder> # or anywhere else
+uv run src/mock/make_mock_models.py --interpolate --extrapolate   # into ../desktop-streamer, checked out beside this repo
+uv run src/mock/make_mock_models.py <models folder> --upscale     # or anywhere else
 ```
 
 ## Setup
@@ -50,42 +64,86 @@ uv run mock/make_mock_models.py <models folder> # or anywhere else
 uv sync
 ```
 
-Note that torch installs as a **CPU build** despite the CUDA index declared in
-`pyproject.toml` — the index is there but not wired to the `torch` requirement, so every
-number recorded so far is a CPU number.
+The CUDA index declared in `pyproject.toml` is not wired to the `torch` requirement, so
+torch comes from PyPI, and what that is depends on the platform: on Linux (and WSL) the
+PyPI wheel is a **CUDA build** (`2.13.0+cu130`), which is what every notebook from 4 on
+trained with, on an RTX 3090; on Windows it is a **CPU build**, which is what notebooks 1–3
+ran on. `onnxruntime` is the CPU package either way, so every `cpu_ms` a notebook writes
+into a graph is a CPU number. GPU numbers for a graph come from the benchmark page.
 
 ## Running the benchmark server
 
 The upscaling models are meant to run in a browser through ONNX Runtime Web, so the
-measurement that decides anything is a browser measurement. `upscale/benchmark/` is a small
+measurement that decides anything is a browser measurement. `src/upscale/benchmark/` is a small
 FastAPI app that serves the page which takes it.
 
 **1. Publish the models.** **One notebook is one model.** Publishing one is writing its
-`.onnx` into `upscale/benchmark/www/models/` and nothing else — **every model notebook ends
+`.onnx` into `dist/upscale/` and nothing else — **every model notebook ends
 with its own export cell** that does exactly that. There is no staging folder and no
 manifest: the server builds the dropdown out of the graphs in that folder on every request,
 so dropping a file in or deleting one is the whole operation, no restart and no re-export of
 anything else. Run whichever notebooks you want on the page:
 
-- `upscale/data_preprocess.ipynb` — builds the patch dataset, and has to run first. With
-  `data/raw/` empty it synthesises desktop-like frames, so it works before any real data
-  exists. It is not a model and exports nothing.
-- `upscale/upscale_dummy.ipynb` — the static baseline: the three filters ONNX can express
+- `src/upscale/00_data_preprocess.ipynb` — builds the patch dataset into `datasets/upscale/`,
+  and has to run first, after `uv run datasets/screens.py` has drawn the desktop screens it
+  mixes in with the photos and video. With no dataset downloaded and nothing in
+  `datasets/raw/captures/` it trains on synthesised desktop-like frames, so it works before
+  any real data exists. It is not a model and exports nothing.
+- `src/upscale/01_upscale_dummy.ipynb` — the static baseline: the three filters ONNX can express
   as a `Resize` node, nearest, bilinear and bicubic. The bar a learned model must beat.
-- `upscale/upscale_nn.ipynb` — the bicubic-residual model.
-- `upscale/upscale_web.ipynb` — the same model shaped for the browser, published at three
+- `src/upscale/02_upscale_nn.ipynb` — a plain CNN that makes the whole picture itself, with
+  no bicubic shortcut.
+- `src/upscale/03_upscale_web.ipynb` — the same model shaped for the browser, published at three
   precisions and two tile sizes.
-- `upscale/upscale_strategies.ipynb` — six architectures under one recipe, scored by the
-  eye-weighted metric, publishing the two that win.
-- `upscale/upscale_geometry.ipynb` — not a model: the *shape* one runs at. Sweeps tile size,
+- `src/upscale/04_upscale_strategies.ipynb` — the strategies worth keeping (the 32-16 control,
+  its luma-only twin and notebook 7's residual blocks) under notebook 3's recipe on the
+  stream-degraded data, judged against the spread of the control at three seeds, publishing
+  the best two at the 320×180 step.
+- `src/upscale/05_upscale_geometry.ipynb` — not a model: the *shape* one runs at. Sweeps tile size,
   batch and scale factor, charges everything in nanoseconds per output pixel, and publishes
   a family of geometries for the page to measure on whatever GPU is in front of it.
+- `src/upscale/06_upscale_reparam.ipynb` — the reparameterized 32-16 the first strategy sweep
+  picked, trained on the stream-degraded data and published at the 320×180 step a client
+  runs, with bilinear and bicubic beside it - the page's 320×180 baselines. Notebook 4 no
+  longer supports that pick.
+- `src/upscale/07_upscale_luma.ipynb` — a residual model that corrects brightness only (colour
+  stays bicubic), with residual blocks, published at the same 320×180 step.
+- `src/upscale/08_upscale_screens.ipynb` — notebook 7's model trained with desktop screens in
+  the data, blind and told how the stream was made (its bitrate, and the host's encoder path),
+  scored on screens, photos and video apart; published at the 320×180 step.
+- `src/upscale/09_upscale_dct.ipynb` — a model that only guesses gains: the DCT of overlapping
+  luma blocks, one learned gain per coefficient (fixed, or decided per block by a tiny
+  network), and a fixed windowed IDCT; colour stays bicubic. Published at the 320×180 step.
+- `src/upscale/10_upscale_lut.ipynb` — look-up tables instead of arithmetic (SR-LUT, MuLUT): a
+  network that reads four luma pixels trains as itself, answers every question it can be asked
+  into a table of megabytes, and is thrown away; the model reads five corners of a table cell
+  per look-up, in four rotations, through one to three tables and one or two stages. Colour
+  stays bicubic. Published at the 320×180 step.
+- `src/upscale/11_upscale_fastlut.ipynb` — look-up tables read at one exact address, with no
+  interpolation: a table addressed by the centre and binned differences from it, and a 3×3
+  sign pattern that looks up a filter. Exports float32 only, at the 320×180 step.
+- `src/upscale/12_upscale_dirnet.ipynb` — a directional upscaler: four learned 1D
+  interpolators per sub-pixel (row, column, two diagonals), chosen per pixel by a tiny
+  network. Three variants, from one fixed 5×5 filter to a blend with a learned correction;
+  published at the 320×180 step.
+- `src/upscale/13_upscale_hints.ipynb` — not a model: what a few bits from the host's
+  full-resolution frame are worth - a content label to route on, or filters the host fits on
+  the client's output. Trains nothing and exports nothing.
+- `src/upscale/14_upscale_postfilter.ipynb` — notebook 13's post-filter on whole streamed
+  clips, refitted on a schedule, against a plain stream at the same total bits. Exports
+  nothing.
+- `src/upscale/15_upscale_tradeoff.ipynb` — every published client and the hint in one
+  currency, bandwidth: what bitrate plain bicubic would need for the same quality. Exports
+  nothing.
 
-`webexport.py` beside them is the export call they share, and the one place the tile step
-and the WebGPU operator budget are written down — `main.py` imports it rather than keeping a
-second copy of either. `metrics.py` is the other shared file: **how a frame is scored**, in
-Y'CbCr with luma weighted six times either chroma channel, because that is the ratio an eye
-reads them at. Every notebook that measures quality should be measuring through it.
+The code the notebooks share lives in `src/upscale/helpers/`: `models.py` (the bicubic skip
+and the models built on it), `training.py` (loading the patches, the training loop, scoring,
+checkpoints), `speed.py` (timing), `postfilter.py` (the host-fitted post-filter of
+notebooks 13–15), `metrics.py` (**how a frame is scored**, in Y'CbCr with
+luma weighted six times either chroma channel, because that is the ratio an eye reads them
+at), `tiles.py` (the tile geometry: how a frame is cut into tiles and what each costs) and
+`webexport.py` (the export call, and the one place the tile step and the WebGPU operator
+budget are written down — `main.py` imports it rather than keeping a second copy).
 
 Almost everything the dropdown shows is read back out of the graph: the input and output
 shapes, the operators, the parameter count, the size on disk, and the halo, which is
@@ -95,8 +153,10 @@ written into the model's own `metadata_props`, so a model is one file that can b
 renamed without losing anything. A model exported by something else, with no metadata at
 all, still lists correctly: the id and label fall back to the filename.
 
-`benchmark/www/models/` is gitignored, so a fresh clone starts empty and the page will say
-so.
+`dist/` is committed: the models in it took long to train, so a fresh clone has them and
+the page lists them without running a notebook. Re-running an export cell overwrites the
+file it owns, and the change shows up in git like any other. The server serves `dist/upscale/` under the page's `models/` path, so the page reads the finished
+models where they are rather than from a copy.
 
 The dependency that runs notebooks is `ipykernel`, not a frontend: open them in VS Code and
 pick `.venv` as the kernel, or point whatever Jupyter you already have at that
@@ -106,7 +166,7 @@ interpreter. Add `jupyterlab` to the project if you want one of your own.
 pulls in uvicorn, without which there is nothing to serve with.
 
 ```
-uv run upscale/benchmark/main.py
+uv run src/upscale/benchmark/main.py
 ```
 
 Then open <http://127.0.0.1:8000>. Options:
@@ -115,20 +175,36 @@ Then open <http://127.0.0.1:8000>. Options:
 | --- | --- | --- |
 | `-p`, `--port` | `8000` | |
 | `--host` | `127.0.0.1` | `0.0.0.0` to measure from another machine on the network |
+| `--models` | `dist/upscale/` | another folder of graphs - `dist/frame_gen_extra/` or `dist/frame_gen_intra/` for the frame generators, whose two inputs (`previous`, `current`) the page fills like the one an upscaler has |
+| `--results` | none | append every measurement the page posts to this file, one JSON line each |
+
+Opened as `/?auto=<id>,<id>,...` (or `?auto=all`), with `backend`, `data`, `mode` and `seconds`
+in the query as the dropdowns would set them, the page measures those models one after
+another with no one at the controls, posts each row - or the error that stopped it - to
+the server, and posts `{"done": true}` last. That is how a headless browser takes a
+measurement. Chrome on Windows, from WSL, against a server on port 8765:
+
+```
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --headless=new --enable-unsafe-webgpu
+    --user-data-dir=%TEMP%\bench-profile "http://localhost:8765/?auto=all&backend=webgpu&data=gpu&mode=reuse"
+```
+
+Each posted row carries the WebGPU adapter it ran on: check that it names the real GPU and not
+a software fallback.
 
 `[standard]` also installs the `fastapi` CLI, so `uv run fastapi run
-upscale/benchmark/main.py` works as well — with two differences worth knowing. It binds
+src/upscale/benchmark/main.py` works as well — with two differences worth knowing. It binds
 `0.0.0.0` rather than localhost, and on a Windows console that is not UTF-8 its startup
 banner dies with a `UnicodeEncodeError` before the server ever starts:
 
 ```
 set PYTHONIOENCODING=utf-8
-uv run fastapi run upscale/benchmark/main.py
+uv run fastapi run src/upscale/benchmark/main.py
 ```
 
 The script above avoids both, which is why it is the documented way in.
 
-The server only serves `www/`. It exists because the page cannot run from `file://` — ONNX
+The server only serves `www/` and `dist/upscale/` (or `--models`). It exists because the page cannot run from `file://` — ONNX
 Runtime Web fetches its own `.wasm` at runtime and that fetch is blocked from a file origin.
 It sets `Cache-Control: no-store` on everything, because a benchmark that re-runs the same
 model would otherwise time the browser cache, and it registers the MIME types for `.wasm`,
@@ -173,23 +249,87 @@ local.
 ```
 desktop-streamer-ai/
 ├── pyproject.toml              deps and the pinned interpreter
-├── mock/                       make_mock_models.py, the three stand-in graphs the client runs
-├── frame_gen_intra/            summary.md only, nothing built yet
-├── frame_gen_extra/            summary.md only, nothing built yet
-└── upscale/
-    ├── summary.md              the models, the numbers, and what they do not say
-    ├── data_preprocess.ipynb   frames  → LR/HR patch pairs
-    ├── upscale_dummy.ipynb     static resampling filters, the bar to beat
-    ├── upscale_nn.ipynb        a first PyTorch model (and what not to export)
-    ├── upscale_web.ipynb       the same model, shaped for the browser
-    ├── upscale_strategies.ipynb  six architectures, one recipe, one eye-weighted metric
-    ├── upscale_geometry.ipynb  the shape to run one at: tile, batch, scale, ns per pixel
-    ├── metrics.py              how a frame is scored: Y'CbCr, luma weighted 6:1:1
-    ├── webexport.py            the export call, the tiling geometry and the op budget
-    ├── data/                   gitignored — dataset and samples
-    ├── checkpoints/            gitignored — trained weights
-    └── benchmark/
-        ├── main.py             the FastAPI server described above
-        └── www/                the page, and gitignored models/ beside it — where
-                                every export lands
+├── datasets/                   gitignored but for the script and the mix — DATASETS_DIR moves it
+│   ├── download.py             uv run datasets/download.py --list; --dest for another drive
+│   ├── screens.py              uv run datasets/screens.py: desktop screens drawn in real fonts
+│   ├── yt8m-mix.txt            the YouTube-8M category mix yt8m-videos fetches by default
+│   ├── raw/                    the downloads: DIV2K, Flickr2K, Set5…, UVG, YouTube-8M + its videos
+│   │   ├── <name>/             one folder per dataset, with its train.txt and test.txt
+│   │   ├── screens/            what screens.py draws, train/ and test/, and screens.json
+│   │   └── captures/           screenshots of your own
+│   ├── upscale/                00_data_preprocess.ipynb's patch pairs, manifest.json, synthetic/
+│   ├── frame_gen_extra/        its 00_data_preprocess.ipynb's frame runs, recorded and drawn, manifest.json,
+│   │                           synthetic/; notebook 10's whole tiles; _synthetic_v1/, the first set
+│   └── frame_gen_intra/        frame_gen_extra's runs, recorded and drawn, written by its own 00_data_preprocess.ipynb;
+│                               _synthetic_v1/, the first set
+├── src/                        the source: code, notebooks, and what training leaves behind
+│   ├── mock/                   make_mock_models.py, the three stand-in graphs the client runs
+│   ├── frame_gen_intra/        frame_gen_extra's layout, five notebooks in
+│   │   ├── summary.md                the problem, the data, the baselines
+│   │   ├── 00_data_preprocess.ipynb  frame_gen_extra's run set, written to datasets/frame_gen_intra/
+│   │   ├── 01_interpolate_dummy.ipynb  hold, the mean, motion shifts and the tile search two-sided: the bar to beat
+│   │   ├── 02_interpolate_refine.ipynb  a network on top of the search, and committing to one frame
+│   │   ├── 03_interpolate_tiles.ipynb  whole frames in the client's tiles, three reaches of the search, priced in the browser
+│   │   ├── 04_interpolate_decide.ipynb  a picture chosen per tile from the search's costs: extrapolation's decision, six choices
+│   │   └── helpers/                  frame_gen_extra's, runs.py and clips.py turned round to (N, N+2) → N+1,
+│   │                                 models.py for interpolators, decide.py's per-tile tables, webexport.py into dist/frame_gen_intra/
+│   ├── frame_gen_extra/        the upscale layout, thirteen notebooks in
+│   │   ├── summary.md                the problem, the data, the baselines
+│   │   ├── 00_data_preprocess.ipynb  screen captures, video, and still screens animated as a desktop in use, streamed, cut into runs
+│   │   ├── 01_extrapolate_dummy.ipynb  repeat, linear and motion-shift extrapolation: the bar to beat
+│   │   ├── 02_extrapolate_twoscale.ipynb  current + a correction made at 1/2 and 1/4 resolution, and its control
+│   │   ├── 03_extrapolate_motion.ipynb  motion instead of pixels: a learned head, a tile search, and both
+│   │   ├── 04_extrapolate_picker.ipynb  whole frames in the client's tiles, and a motion chosen per cell from N−2 and N
+│   │   ├── 06_extrapolate_history.ipynb  each tile's motion over the last three received pairs
+│   │   ├── 07_extrapolate_budget.ipynb  where the search's error comes from, by scene event and kind
+│   │   ├── 08_extrapolate_pyramid.ipynb  the motion measured coarse to fine and sub-pixel, with a stop decision
+│   │   ├── 09_extrapolate_recursive.ipynb  3-D recursive search: a motion per block, as a TV finds it
+│   │   ├── 10_extrapolate_masked.ipynb  a network where the search is unsure, behind its confidence mask
+│   │   ├── 11_extrapolate_recorded.ipynb  real against drawn: scores by kind, and how much of a change is motion
+│   │   ├── 12_extrapolate_masked_real.ipynb  the masked network trained on drawn tiles, recorded, or both
+│   │   ├── 13_extrapolate_decide.ipynb  carry the motion or repeat, decided per tile by a small trained model
+│   │   └── helpers/                  sources, degrade, metrics copied from upscale; scenes.py (the
+│   │                                 desktop motion), recorded.py (the screen captures picked), runs.py,
+│   │                                 clips.py (whole frames, cut as the client cuts them), models.py,
+│   │                                 training.py, speed.py, show.py (motion pictures), history.py,
+│   │                                 budget.py, recursive.py, masked.py, decide.py, webexport.py
+│   └── upscale/
+│       ├── summary.md                the models, the numbers, and what they do not say
+│       ├── 00_data_preprocess.ipynb  frames → LR/HR patch clips, a halo around the LR side
+│       ├── 01_upscale_dummy.ipynb    static resampling filters, the bar to beat
+│       ├── 02_upscale_nn.ipynb       a first PyTorch model: a plain CNN, no bicubic shortcut
+│       ├── 03_upscale_web.ipynb      the same model, shaped for the browser
+│       ├── 04_upscale_strategies.ipynb  three strategies, one recipe, judged against seed noise
+│       ├── 05_upscale_geometry.ipynb  the shape to run one at: tile, batch, scale, ns per pixel
+│       ├── 06_upscale_reparam.ipynb  the selected model, trained on the stream, published at 320x180
+│       ├── 07_upscale_luma.ipynb     residual blocks that correct brightness only; colour stays bicubic
+│       ├── 08_upscale_screens.ipynb  the same, trained with desktop screens, blind and told the stream
+│       ├── 09_upscale_dct.ipynb      gains on the DCT of overlapping luma blocks; colour stays bicubic
+│       ├── 10_upscale_lut.ipynb      look-up tables: megabytes of stored answers, a few hundred ops a pixel
+│       ├── 11_upscale_fastlut.ipynb  look-up tables read at one exact address, no interpolation
+│       ├── 12_upscale_dirnet.ipynb   four 1D interpolators per pixel, and a network choosing between them
+│       ├── 13_upscale_hints.ipynb    what bits from the host's full-resolution frame are worth
+│       ├── 14_upscale_postfilter.ipynb  the host-fitted post-filter on whole streamed clips
+│       ├── 15_upscale_tradeoff.ipynb  bits, compute and quality in one currency: bandwidth
+│       ├── helpers/                  modules the notebooks import, never run on their own
+│       │   ├── sources.py            reads the downloaded datasets back
+│       │   ├── motion.py             a still image as a moving clip: slide, zoom or hold
+│       │   ├── degrade.py            the stream's degradation: downscale, 4:2:0, H.264
+│       │   ├── patches.py            reads the patch set back for the model notebooks
+│       │   ├── models.py             the bicubic skip and the models built on it
+│       │   ├── training.py           loaders, the training loop, scoring, checkpoints
+│       │   ├── metrics.py            how a frame is scored: Y'CbCr, luma weighted 6:1:1
+│       │   ├── speed.py              timing and multiply-accumulate counts
+│       │   ├── postfilter.py         the host-fitted post-filter: classes, fits, bits
+│       │   ├── tiles.py              the tiling geometry: step, halo, kept, which tile to run
+│       │   └── webexport.py          the export call, the tile step and the op budget
+│       ├── data/                     gitignored — samples the notebooks write
+│       ├── checkpoints/              gitignored — trained weights and intermediate graphs
+│       └── benchmark/
+│           ├── main.py             the FastAPI server described above
+│           └── www/                the page
+└── dist/                       committed — the finished models, where every export lands
+    ├── upscale/                *.onnx, served to the page as models/
+    ├── frame_gen_extra/        *.onnx with extrapolate.onnx's two-input contract; extrapolate2x_tilesearch_r4_s2.onnx is the client's
+    └── frame_gen_intra/        *.onnx with interpolate.onnx's contract; interpolate2x_tilesearch_r4_s2.onnx and _tilepick_ for the client
 ```
