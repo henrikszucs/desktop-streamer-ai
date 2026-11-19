@@ -103,13 +103,17 @@ def forward(model, inputs):
 
 
 @torch.no_grad()
-def evaluate(model, loader, trim):
-    """Every score in `metrics.report`, averaged over a loader."""
+def evaluate(model, loader, trim, scorer=None):
+    """Every score in `metrics.report`, averaged over a loader. A `scorer(prediction, target)`
+    returning {name: batch mean} adds its own scores, e.g. a perceptual metric (notebook 26)."""
     model.eval()
     totals, count = {}, 0
     for lr, hr in loader:
         lr, hr = to_device(lr), hr.to(DEVICE)
-        scores = metrics.report(trim(forward(model, lr)), hr)
+        prediction = trim(forward(model, lr))
+        scores = metrics.report(prediction, hr)
+        if scorer is not None:
+            scores.update({key: float(value) for key, value in scorer(prediction, hr).items()})
         for key, value in scores.items():
             totals[key] = totals.get(key, 0.0) + value * len(hr)
         count += len(hr)
@@ -200,10 +204,13 @@ MIN_IMPROVEMENT = {"ssim": 1e-5}
 
 def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1e-3,
           loss_fn=F.l1_loss, select="wpsnr", patience=6, min_learning_rate=None,
-          min_improvement=None, checkpoint=None, verbose=1, teacher=None):
+          min_improvement=None, checkpoint=None, verbose=1, teacher=None, scorer=None,
+          lower_is_better=False):
     """Train `model` with Adam until it stops getting better, scoring it after every epoch.
 
     How long it trains is not fixed: it follows the `select` score on the validation split.
+    `select` is one of `SCORE_NAMES`, or a score a `scorer` adds (see `evaluate`); with
+    `lower_is_better` a smaller score is the better one (an error, not a quality).
 
     - **Best epoch**: an epoch improves on the best if it beats it by more than
       `min_improvement` (0.001 dB if not given, 0.00001 for SSIM). The best epoch is loaded
@@ -232,7 +239,8 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
         min_learning_rate = learning_rate / 100
     if min_improvement is None:
         min_improvement = MIN_IMPROVEMENT.get(select, 0.001)
-    metric = SCORE_NAMES[select]
+    metric = SCORE_NAMES.get(select, f"val_{select}")
+    sign = -1.0 if lower_is_better else 1.0
     model.to(DEVICE)
     optimiser = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=learning_rate)
 
@@ -250,7 +258,7 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
                 print(f"It had finished ({progress['stopped']}), so nothing is trained again - "
                       f"delete the file to train from the start.")
     else:
-        start = evaluate(model, val_loader, trim)[select]
+        start = evaluate(model, val_loader, trim, scorer)[select]
         progress = {"epoch": 0, "history": [], "waited": 0, "stopped": None, "start": start,
                     "seconds": 0.0, "best": {"epoch": 0, "score": start, "state": copy_weights(model)}}
 
@@ -272,7 +280,7 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
         rate = optimiser.param_groups[0]["lr"]
         loss = train_one_epoch(model, train_loader, trim, loss_fn, optimiser, show_progress=verbose == 1,
                                teacher=teacher)
-        scores = evaluate(model, val_loader, trim)
+        scores = evaluate(model, val_loader, trim, scorer)
         seconds = time.time() - epoch_started
         scores["loss"] = loss
         scores["learning_rate"] = rate
@@ -280,7 +288,7 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
         progress["seconds"] += seconds
 
         best_before = progress["best"]["score"]
-        improved = scores[select] > best_before + min_improvement
+        improved = sign * (scores[select] - best_before) > min_improvement
         if improved:
             progress["best"] = {"epoch": epoch, "score": scores[select], "state": copy_weights(model)}
             progress["waited"] = 0
@@ -309,7 +317,9 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
             # e.g. "348/348 [==============================] - 9s 26ms/step - loss: 0.0341 -
             #       val_wpsnr: 30.9120 - ... - learning_rate: 1.0e-04"
             steps = len(train_loader)
-            validation = " - ".join(f"{name}: {scores[key]:.4f}" for key, name in SCORE_NAMES.items())
+            names = {**SCORE_NAMES, **{key: f"val_{key}" for key in scores
+                                       if key not in SCORE_NAMES and key not in ("loss", "learning_rate")}}
+            validation = " - ".join(f"{name}: {scores[key]:.4f}" for key, name in names.items())
             over_the_bar = "\r" if verbose == 1 else ""
             print(f"{over_the_bar}{progress_bar(steps, steps, seconds)} - loss: {loss:.4f} - "
                   f"{validation} - learning_rate: {rate:.1e}")

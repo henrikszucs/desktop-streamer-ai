@@ -1,0 +1,29 @@
+{
+  "loss": {
+    "ppd": 45,
+    "acuity": 1,
+    "contrast_sensitivity": 1,
+    "chroma_cutoff_cpd": 12,
+    "oblique": 0.15,
+    "black_level": 0,
+    "csf_adjust": null,
+    "gain_adjust": null,
+    "transition": "linear",
+    "high_jnd": 5,
+    "high_border": "constancy",
+    "csf_high_adjust": null,
+    "masking_exponent": 1.1999976127205398,
+    "beta": 2,
+    "beta_tiles": 16,
+    "tile": 64,
+    "beta_psych": 3.5,
+    "rho": 0.5510151726289838,
+    "annoyance_d50": 2.8333611242503416,
+    "d_half": 1,
+    "w_detail": 0.2,
+    "w_noise": 0.1,
+    "min_mean": 0.05,
+    "objective": "bounded",
+    "dc_metric": "de76"
+  }
+}

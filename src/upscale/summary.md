@@ -12,7 +12,7 @@ be sent fewer pixels than it displays.
 > been measured on the card. It keeps 69% of the told model's SSIM-Y gain (see "60 fps on a
 > GTX 1660 Ti"), with bicubic's colour.
 
-> **Status: twenty-four notebooks. desktop-streamer runs notebook 23's told 24×2**
+> **Status: twenty-six notebooks. desktop-streamer runs notebook 23's told 24×2**
 > (`dist/upscale/client/upscale.onnx`, and its float16 twin on a GPU with `shader-f16`), told
 > each frame's slice QP, loop filter and frame type. Notebooks 17–23, which made it, are not
 > written up below yet. The sections below were written up to notebook 16, when notebook 8's
@@ -223,6 +223,19 @@ Run in order, from this folder:
   table again on the RTX 3090 to predict that card from this one. It then trains a body that
   runs at a quarter of the pixels, and exports `client/upscale_fast.onnx` and its float16
   twin. See "60 fps on a GTX 1660 Ti".
+- `25_upscale_static.ipynb` — **the static filters, scored as the told models are**: on
+  notebook 21's 9,628 validation patches through `training.evaluate`, where bicubic reads
+  notebook 24's 0.9045 SSIM-Y and 33.55 dB. It includes notebook 1's bicubic + unsharp mask
+  and the mask tuned on the training split. Trains nothing and exports nothing. See "Static
+  methods".
+- `26_upscale_jnd_loss.ipynb` — **the JND loss against the SSIM loss** on the two best bodies,
+  notebook 22's told 24×2 and notebook 24's q24: the perceptual repo's differentiable JND
+  metric as the loss, same data, seeds and schedule, judged by SSIM-Y, PSNR, JND, LPIPS, GMSD
+  and pictures of patches and whole frames. Exports nothing. See "The JND loss".
+- `27_upscale_mixed_loss.ipynb` — **the SSIM loss and the JND loss together**: the SSIM loss
+  + λ × the JND loss (spec defaults) at λ = 0.1, 0.3 and 1, on the same two bodies, seeds and
+  schedule, against both losses alone; λ set from the two losses' measured gradients. Exports
+  nothing. See "The SSIM and JND losses together".
 
 The notebooks share their code through `helpers/`, so each one reads as a short list of
 steps: `models.py` holds the bicubic skip and the models built on it (`PlainUpscaler`,
@@ -300,9 +313,39 @@ mostly **slides** — 29% of the frames, a median of 33.7 dB and a quarter under
 which is scrolling, a desktop's commonest motion, so it stays. Real video is at 41.9 dB
 with 4% under 30. Every result further down was trained on an older set.
 
-## Static methods (`01_upscale_dummy.ipynb`)
+## Static methods (`01_upscale_dummy.ipynb`, `25_upscale_static.ipynb`)
 
-### Quality — 76 validation patches, 64px → 128px
+### Quality, scored as the models are — notebook 25
+
+Notebook 25 scores the filters on notebook 21's 9,628 validation patches through
+`training.evaluate`, the patches and code of notebooks 22–24. Bicubic is `models.bicubic`
+(a = −0.75), the skip every model is built on:
+
+| Filter | SSIM-Y | luma dB | over bicubic |
+| --- | --- | --- | --- |
+| Lanczos-3 (PIL, float) | 0.9047 | 33.69 | +0.0002 / +0.14 |
+| notebook 1's pipeline: PIL bicubic + unsharp 1 px, 80% | 0.9044 | 33.66 | −0.0002 / +0.10 |
+| bicubic + unsharp 1.5 px, 10% (tuned on the training split) | 0.9042 | 33.60 | −0.0004 / +0.05 |
+| **bicubic** | **0.9045** | **33.55** | |
+| bicubic, PIL (a = −0.5) | 0.9048 | 33.50 | +0.0003 / −0.05 |
+| bicubic + unsharp 1 px, 80% | 0.8991 | 33.36 | −0.0055 / −0.19 |
+| bilinear | 0.9016 | 32.94 | −0.0030 / −0.61 |
+| Hamming (PIL, float) | 0.8963 | 32.58 | −0.0082 / −0.97 |
+| nearest | 0.8883 | 32.01 | −0.0162 / −1.54 |
+
+- **No unsharp mask beats bicubic on SSIM-Y.** Every radius and amount tried on the
+  training split scores under plain bicubic. The best by luma PSNR gains +0.05 dB.
+- **The mask costs most where the stream has no loop filter**: −0.0104 SSIM-Y on x264's P
+  frames at 80%, against −0.0005 on NVENC's deblocked ones.
+- **Lanczos-3 is the best static filter**, at +0.14 dB, and neither ONNX `Resize` nor a GPU
+  sampler has it. Bicubic stays the bar.
+
+Notebook 21's targets are video only; screens and photos are not in it.
+
+### Quality — notebook 1, 76 validation patches, 64px → 128px
+
+The table below is notebook 1's first run, in RGB PSNR, on the earlier clean bicubic pairs.
+Notebook 25's table above supersedes it.
 
 | Method | PSNR | vs nearest |
 | --- | --- | --- |
@@ -1281,6 +1324,82 @@ timed in one session, except the told model's:
 `upscale_fast_q24_frozen_skip_fp16_tile320x180_b16.onnx` is ready for Run 8 of
 `bottlenecks_gtx1660ti.md`.
 
+## The JND loss (`26_upscale_jnd_loss.ipynb`)
+
+The perceptual repo beside this one (`perceptual_jnd_loss.py`) makes its JND metric a loss:
+visible error in just-noticeable differences after contrast sensitivity, a brightness gain
+and masking, d / (d + 1) a picture. Its settings are in `helpers/jnd_settings.json`, in the
+repo's config format; the judge reads the same file. Notebook 26 trains the two best bodies on it
+with notebook 22's recipe and seeds, keeps the epoch with the best validation JND, and sets them
+against their SSIM-loss runs. `helpers/judges.py` holds the judges neither loss trained on: LPIPS
+(AlexNet, v0.1, fitted to people's choices; built from its public weights, checked against the
+`lpips` package to 8e-5) and GMSD.
+
+Two rounds so far: the spec's defaults (2026-11-17), and settings given on 2026-11-19 that differ
+in masking exponent 1.2 (0.7), tiles pooled at β = 16 (4), and the d-to-MOS curve. On the 9,628
+validation patches, each the mean of two seeds (the JND column changes with the settings, so it
+is left out):
+
+| | SSIM-Y | luma dB | LPIPS | GMSD | seam between LR pixels |
+|---|---|---|---|---|---|
+| bicubic | 0.9045 | 33.55 | 0.1556 | 0.0712 | 1.063 |
+| told 24×2, SSIM loss (ships) | **0.9288** | **35.08** | **0.1208** | **0.0567** | 1.210 |
+| told 24×2, JND loss, spec defaults | 0.9224 | 34.97 | 0.1231 | 0.0587 | **1.160** |
+| told 24×2, JND loss, 11-19 settings | 0.9209 | 34.79 | 0.1249 | 0.0599 | 1.176 |
+| q24, SSIM loss (published) | **0.9212** | 34.47 | 0.1289 | **0.0600** | 1.292 |
+| q24, JND loss, spec defaults | 0.9159 | **34.48** | **0.1261** | 0.0604 | **1.171** |
+| q24, JND loss, 11-19 settings | 0.9147 | 34.31 | 0.1279 | 0.0616 | 1.193 |
+
+- **The told 24×2 stays on the SSIM loss**: under either setting the JND loss loses on every
+  judge, its own JND included, and at QP 30 and over it leaves lighter strokes on mottled
+  backgrounds.
+- **The q24 looks better on the JND loss**: with the spec's defaults, LPIPS closer on 64% of the
+  patches (seeds 0.0007 apart), crisper text with less ghosting, and most of the pixel grid the
+  SSIM loss leaves gone (the step between two LR pixels' outputs is 1.29 times the step inside
+  one, 1.17 under the JND loss, 1.04 in the truth) - the pattern on the q24's cells that
+  notebook 24 had not looked at. It costs 0.0053 SSIM-Y and no luma dB.
+- **The 11-19 settings train worse models than the defaults**, both bodies, every judge above:
+  LPIPS 0.0018 worse, less fine detail kept (0.55-0.57 of the truth's against 0.59-0.60). The q24
+  still edges its SSIM-loss run (closer on 55% of the patches). Likely, untested: at β = 16 a
+  patch's d is nearly its worst tile's, so one of its 2×2 tiles takes most of the gradient.
+- People: one viewer's blind A/B of 20 whole-frame crops (the Upscaler Eye Test page) preferred
+  the spec-default JND loss in 11 pairs, the SSIM loss in 5, neither in 4 (6-3 for the told
+  24×2, 5-2 for the q24). Round 2, the 11-19 models on the same windows, waits for votes.
+  Nothing is exported; the JND q24 to export is round 1's
+  (`checkpoints/jnd_runs/_spec_defaults/fast_q24_seed1.pt`), through notebook 24's export cell.
+
+## The SSIM and JND losses together (`27_upscale_mixed_loss.ipynb`)
+
+The two losses fail differently: the SSIM loss places edges and keeps brightness but leaves a
+grid of the upscaler's pixels; the JND loss takes most of the grid away but lets edges and
+brightness drift. Notebook 27 trains the sum, `ssim_l1_loss` + λ × the JND loss at the spec's
+defaults, from random weights with notebook 26's recipe. On a trained model the JND term's
+gradient is 2.6-2.9 times the SSIM loss's, so λ = 0.1, 0.3 and 1 give it a quarter of, the same
+as, and three times the SSIM loss's pull. On the validation patches, each the mean of two seeds
+(at most 0.0009 apart on LPIPS):
+
+| | SSIM-Y | luma dB | LPIPS | GMSD | seam between LR pixels |
+|---|---|---|---|---|---|
+| told 24×2, SSIM loss (ships) | **0.9288** | 35.08 | **0.1208** | **0.0567** | 1.207 |
+| told 24×2, mix 0.1 | 0.9283 | 35.18 | 0.1209 | 0.0568 | 1.196 |
+| told 24×2, mix 0.3 | 0.9278 | **35.24** | 0.1218 | 0.0568 | 1.174 |
+| told 24×2, JND loss | 0.9224 | 34.97 | 0.1231 | 0.0587 | **1.159** |
+| q24, SSIM loss (published) | **0.9212** | 34.47 | 0.1289 | 0.0600 | 1.291 |
+| q24, mix 0.1 | **0.9212** | 34.59 | 0.1275 | 0.0595 | 1.264 |
+| q24, mix 1 | 0.9196 | **34.64** | 0.1269 | **0.0594** | 1.208 |
+| q24, JND loss | 0.9159 | 34.48 | **0.1261** | 0.0604 | **1.170** |
+
+- **The q24 is better on the sum than on either loss alone.** Mix 1 beats the SSIM loss on
+  every judge but SSIM-Y (LPIPS closer on 59% of the patches, 65% of the screens; GMSD the best
+  of all; +0.17 dB; the least error at edges; a third less grid) for 0.0016 SSIM-Y; mix 0.1
+  gets about two thirds of the LPIPS gain with no SSIM-Y lost. Its text is a little darker and
+  smoother, nearer the truth's weight.
+- **The told 24×2 gains no LPIPS or GMSD from it**, only 0.10-0.16 dB of luma, centred
+  brightness and a little less grid; it stays on the SSIM loss.
+- Every mix scores more luma dB than either loss alone. Nothing is exported; the q24 to export
+  next is mix 1 (`checkpoints/mix_runs/fast_q24_mix_1_seed*.pt`), through notebook 24's export
+  cell, once the eye agrees.
+
 ## Tiling geometry
 
 Inference on the page runs on fixed tiles, not on frames: one pinned input size, one
@@ -1694,8 +1813,9 @@ decide.
 - **Retire `06_upscale_reparam.ipynb`**: it trains the pick the first strategy sweep made,
   which the sweep re-run on real data does not support, and its graphs are from the patch set
   before screens.
-- **Re-measure `01_upscale_dummy.ipynb` and `02_upscale_nn.ipynb` through
-  `helpers/metrics.py`** on the stream-degraded set, or drop their numbers: both still report
-  RGB PSNR on the old synthetic frames, and nothing measured since can be compared with them.
+- **Re-measure `02_upscale_nn.ipynb` through `helpers/metrics.py`** on the stream-degraded
+  set, or drop its numbers: it still reports RGB PSNR on the old synthetic frames, and
+  nothing measured since can be compared with them. Notebook 1's filters were re-measured by
+  notebook 25.
 
 Sibling problems: `../frame_gen_intra/summary.md`, `../frame_gen_extra/summary.md`.
