@@ -263,6 +263,7 @@ desktop-streamer-ai/
 │   └── frame_gen_intra/        frame_gen_extra's runs, recorded and drawn, written by its own 00_data_preprocess.ipynb;
 │                               _synthetic_v1/, the first set
 ├── src/                        the source: code, notebooks, and what training leaves behind
+│   ├── summary.ipynb           the three problems side by side: baselines, picked graphs, PSNR, SSIM, browser time - plots only
 │   ├── mock/                   make_mock_models.py, the three stand-in graphs the client runs
 │   ├── frame_gen_intra/        frame_gen_extra's layout, five notebooks in
 │   │   ├── summary.md                the problem, the data, the baselines
