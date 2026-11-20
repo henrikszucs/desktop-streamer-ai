@@ -12,8 +12,13 @@ be sent fewer pixels than it displays.
 > been measured on the card. It keeps 69% of the told model's SSIM-Y gain (see "60 fps on a
 > GTX 1660 Ti"), with bicubic's colour.
 
+> **2026-11-20: every trained graph was deleted from `dist/upscale/`**, to train the models again
+> on one set (notebook 28's); only notebook 1's three filters are left there. desktop-streamer
+> keeps its own copy of the graphs it runs. The sections below record what the deleted graphs
+> scored.
+>
 > **Status: twenty-six notebooks. desktop-streamer runs notebook 23's told 24×2**
-> (`dist/upscale/client/upscale.onnx`, and its float16 twin on a GPU with `shader-f16`), told
+> (its copy of what was `dist/upscale/client/upscale.onnx`, and its float16 twin on a GPU with `shader-f16`), told
 > each frame's slice QP, loop filter and frame type. Notebooks 17–23, which made it, are not
 > written up below yet. The sections below were written up to notebook 16, when notebook 8's
 > model was the one to ship. Each section's numbers are on the set of its day; **every
@@ -244,7 +249,8 @@ Run in order, from this folder:
   `kind` label per patch: 147,813 training and 24,216 validation patches in
   `qp_diverse_pairs/`, 4.3 and 2.5 times notebook 21's. Trains nothing. See "A larger, more
   diverse set".
-- `29_upscale_scoreboard.ipynb` — **every published model on one set**: each of the 27
+- `29_upscale_scoreboard.ipynb` — **every published model on one set** (its trained graphs since
+  deleted, see the status note; it now scores notebook 1's filters): each of the 26
   distinct graphs in `dist/upscale/` run through onnxruntime on notebook 28's 24,216
   validation patches, told graphs given each patch's slice QP, loop filter and frame type;
   SSIM-Y and luma PSNR against `models.bicubic`, by kind and slice QP. Checked first against
@@ -252,6 +258,10 @@ Run in order, from this folder:
   one set".
 
 ## Every model on one set (`29_upscale_scoreboard.ipynb`)
+
+*Measured before every trained graph was deleted from `dist/upscale/` on 2026-11-20: the table is
+the record of those graphs. Notebook 29 now scores notebook 1's filters until new graphs are
+exported.*
 
 The sections further down measured each model on the set of its day — notebook 0's patches
 (notebooks 1–16, no longer on disk), notebook 17's (18–20) or notebook 21's (22–27) — so their
@@ -280,7 +290,6 @@ by kind:
 | 24 | told q24 fast (the client's fallback) | 0.8711 | +0.0186 | +0.0178 to +0.0195 | +0.0176 | +0.0212 | +0.0134 |
 | 3 | web 32-16 | 0.8710 | +0.0185 | +0.0172 to +0.0198 | +0.0092 | +0.0282 | +0.0132 |
 | 10 | LUT S 17 | 0.8709 | +0.0185 | +0.0165 to +0.0206 | +0.0026 | +0.0364 | +0.0050 |
-| 4 | strategy 32-16 leaky | 0.8709 | +0.0185 | +0.0171 to +0.0198 | +0.0090 | +0.0283 | +0.0130 |
 | 4 | strategy luma 32-16 | 0.8706 | +0.0182 | +0.0169 to +0.0195 | +0.0087 | +0.0279 | +0.0129 |
 | 3 | web 32-16, int8 | 0.8696 | +0.0172 | +0.0159 to +0.0185 | +0.0076 | +0.0269 | +0.0122 |
 | 11 | fast LUT S | 0.8688 | +0.0164 | +0.0146 to +0.0182 | +0.0027 | +0.0318 | +0.0047 |
@@ -327,9 +336,10 @@ with the `psnr-rgb` column, not with `wpsnr`.
 Each model notebook owns its own export cell and writes its `.onnx` into `dist/upscale/`
 at the repo root through `helpers/webexport.py`. That is all publishing is: the benchmark server
 lists whatever graphs are in that folder, per request, so there is no manifest for a
-re-export to leave stale. 64 graphs are on the page today: notebooks 1–3's eight (seven at
-the old 128 step, one at 256), and every model from notebook 4 on at the 320×180 step, most at float32, float16
-and float16 as a whole 1080p frame.
+re-export to leave stale. 7 graphs are on the page today, notebook 1's three filters at the
+128 and 320×180 steps: every trained graph was deleted on 2026-11-20 (64 were on the page
+before, notebooks 1–3's eight and every model from notebook 4 on at the 320×180 step, most at
+float32, float16 and float16 as a whole 1080p frame).
 
 `data/` and `checkpoints/` are gitignored: they are what training leaves behind. `dist/` is
 committed, because it holds only what is finished and published, and those models took
@@ -871,7 +881,9 @@ the luma frame keeps at bicubic for nothing. (On the screens set it does move it
 So the notebook now trains only those two tiers and the control: `luma 24 + 2 blocks`,
 `luma 32-16` and `32-16` at three seeds, five runs (about 45 minutes) instead of eleven. The
 table above is the record of the other five, and the notebook publishes `luma 32-16` as its
-second graph where it published `32-16 leaky`.
+second graph where it published `32-16 leaky`. That graph's architecture (`PlainUpscaler` with
+a leaky ReLU) is no longer in the code, so its graphs were deleted from `dist/upscale/` on
+2026-11-20; the numbers below that mention it are the record of what it scored.
 
 On the drawn desktop frame of notebooks 3 and 7 (no codec), `luma 24 + 2 blocks` reads
 27.68 dB wpsnr and 0.9656 SSIM-Y against the control's 27.10 and 0.9609 and bicubic's 25.82
@@ -894,7 +906,8 @@ and 0.9437.
   called two ties wins. It compares with the mean now. Every single-run comparison in this
   file has the same exposure.
 
-Published to the page: `luma 24 + 2 blocks` and `32-16 leaky`, the best two graphs (the
+Published to the page (`32-16 leaky`'s graphs since deleted, see above): `luma 24 + 2 blocks`
+and `32-16 leaky`, the best two graphs (the
 reparameterized strategies merge into the same graphs as their plain twins, so they count
 once), at the 320×180 step in float32, float16 and float16 as a whole 1080p frame
 (`upscale_strategy_*`). The first is notebook 7's architecture with this run's weights, so
@@ -1718,7 +1731,7 @@ does — nearest needs none, bilinear 1, bicubic 2, every network here 4:
 | `upscale_dummy` | static nearest / bilinear / bicubic | 128 / 130 / 132 | 0 / 1 / 2 |
 | `upscale_nn` | nn bicubic residual | 136 | 4 |
 | `upscale_web` | web 32-16 in fp32 / fp16 / int8, and fp16 at step 256 | 136 / 264 | 4 |
-| `upscale_strategies` | luma 24 + 2 blocks and luma 32-16 (and 32-16 leaky, from the eight-strategy run), fp32 / fp16, and fp16 as a whole 1080p frame | 328×188 / 968×548 | 4 |
+| `upscale_strategies` | luma 24 + 2 blocks and luma 32-16, fp32 / fp16, and fp16 as a whole 1080p frame | 328×188 / 968×548 | 4 |
 
 The first results table below is the older graphs at the 128 step; "Results at the client's
 tile" measures every graph at the 320×180 step, which is everything from notebook 4 on.
