@@ -256,6 +256,7 @@ desktop-streamer-ai/
 │   ├── raw/                    the downloads: DIV2K, Flickr2K, Set5…, UVG, YouTube-8M + its videos
 │   │   ├── <name>/             one folder per dataset, with its train.txt and test.txt
 │   │   ├── screens/            what screens.py draws, train/ and test/, and screens.json
+│   │   ├── screens-s1/         a second set from other seeds: screens.py --seed 1 --name screens-s1 --train 600 --test 120
 │   │   └── captures/           screenshots of your own
 │   ├── upscale/                00_data_preprocess.ipynb's patch pairs, manifest.json, synthetic/
 │   ├── frame_gen_extra/        its 00_data_preprocess.ipynb's frame runs, recorded and drawn, manifest.json,

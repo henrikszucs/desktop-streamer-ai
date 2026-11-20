@@ -16,7 +16,9 @@ be sent fewer pixels than it displays.
 > (`dist/upscale/client/upscale.onnx`, and its float16 twin on a GPU with `shader-f16`), told
 > each frame's slice QP, loop filter and frame type. Notebooks 17–23, which made it, are not
 > written up below yet. The sections below were written up to notebook 16, when notebook 8's
-> model was the one to ship.
+> model was the one to ship. Each section's numbers are on the set of its day; **every
+> published model on one set is in "Every model on one set"** (notebook 29), where the told
+> 24×2 leads at +0.0354 SSIM-Y over bicubic.
 >
 > **The best model overall is notebook 8's**: residual blocks correcting luma only (28,120
 > operations an LR pixel), trained with desktop screens in the data and told the host's
@@ -236,6 +238,78 @@ Run in order, from this folder:
   + λ × the JND loss (spec defaults) at λ = 0.1, 0.3 and 1, on the same two bodies, seeds and
   schedule, against both losses alone; λ set from the two losses' measured gradients. Exports
   nothing. See "The SSIM and JND losses together".
+- `28_upscale_qp_diverse_pairs.ipynb` — **notebook 21's pairs, larger and more diverse**: the
+  same lines, labels and bins from 1,396 YouTube targets (every sequence measured with notebook
+  17's test, up to three a video), 1,000 drawn screens and 400 photos, 4 patches a frame and a
+  `kind` label per patch: 147,813 training and 24,216 validation patches in
+  `qp_diverse_pairs/`, 4.3 and 2.5 times notebook 21's. Trains nothing. See "A larger, more
+  diverse set".
+- `29_upscale_scoreboard.ipynb` — **every published model on one set**: each of the 27
+  distinct graphs in `dist/upscale/` run through onnxruntime on notebook 28's 24,216
+  validation patches, told graphs given each patch's slice QP, loop filter and frame type;
+  SSIM-Y and luma PSNR against `models.bicubic`, by kind and slice QP. Checked first against
+  the numbers recorded on notebook 21's set. Trains and exports nothing. See "Every model on
+  one set".
+
+## Every model on one set (`29_upscale_scoreboard.ipynb`)
+
+The sections further down measured each model on the set of its day — notebook 0's patches
+(notebooks 1–16, no longer on disk), notebook 17's (18–20) or notebook 21's (22–27) — so their
+numbers do not compare across sections. Notebook 29 scores every model that was published, as
+its graph, on notebook 28's validation split: video, drawn screens and photos, x264 and NVENC,
+slice QP 0–51. The same code reproduces the numbers recorded on notebook 21's set (bicubic
+0.9045, the told 24×2 0.9289, q24 0.9213 against 0.9212), and packing patches into a tile
+changes no core of any graph. **Compare models by this table**; a section's own numbers say
+what that notebook found on its set.
+
+SSIM-Y gain over `models.bicubic` (0.8524 on this set), with its 95% range over sources, and
+by kind:
+
+| nb | model | SSIM-Y | over bicubic | 95% range | video | screens | photos |
+|---|---|---|---|---|---|---|---|
+| 23 | **told 24×2 (the client's)** | **0.8878** | **+0.0354** | +0.0337 to +0.0371 | **+0.0249** | +0.0474 | **+0.0257** |
+| 8 | screens 24×2, told 0.2 bpp | 0.8826 | +0.0301 | +0.0280 to +0.0324 | +0.0146 | +0.0483 | +0.0149 |
+| 8 | screens 24×2, told 0.46 bpp | 0.8820 | +0.0296 | +0.0274 to +0.0319 | +0.0132 | +0.0481 | +0.0153 |
+| 10 | LUT SDY x2 17 | 0.8797 | +0.0273 | +0.0248 to +0.0299 | +0.0078 | **+0.0493** | +0.0105 |
+| 8 | screens 24×2, told 1 bpp | 0.8789 | +0.0265 | +0.0242 to +0.0288 | +0.0095 | +0.0456 | +0.0121 |
+| 16 | luma 32-16 leaky, distilled | 0.8770 | +0.0246 | +0.0224 to +0.0269 | +0.0077 | +0.0433 | +0.0112 |
+| 4, 7 | luma 24×2 (notebook 4's run) | 0.8763 | +0.0239 | +0.0224 to +0.0254 | +0.0132 | +0.0350 | +0.0176 |
+| 12 | DirNet full | 0.8758 | +0.0234 | +0.0213 to +0.0256 | +0.0075 | +0.0411 | +0.0103 |
+| 11 | fast LUT SDY x2 | 0.8724 | +0.0200 | +0.0180 to +0.0220 | +0.0049 | +0.0369 | +0.0071 |
+| 12 | DirNet adaptive | 0.8720 | +0.0196 | +0.0176 to +0.0216 | +0.0043 | +0.0365 | +0.0075 |
+| 24 | told q24 fast (the client's fallback) | 0.8711 | +0.0186 | +0.0178 to +0.0195 | +0.0176 | +0.0212 | +0.0134 |
+| 3 | web 32-16 | 0.8710 | +0.0185 | +0.0172 to +0.0198 | +0.0092 | +0.0282 | +0.0132 |
+| 10 | LUT S 17 | 0.8709 | +0.0185 | +0.0165 to +0.0206 | +0.0026 | +0.0364 | +0.0050 |
+| 4 | strategy 32-16 leaky | 0.8709 | +0.0185 | +0.0171 to +0.0198 | +0.0090 | +0.0283 | +0.0130 |
+| 4 | strategy luma 32-16 | 0.8706 | +0.0182 | +0.0169 to +0.0195 | +0.0087 | +0.0279 | +0.0129 |
+| 3 | web 32-16, int8 | 0.8696 | +0.0172 | +0.0159 to +0.0185 | +0.0076 | +0.0269 | +0.0122 |
+| 11 | fast LUT S | 0.8688 | +0.0164 | +0.0146 to +0.0182 | +0.0027 | +0.0318 | +0.0047 |
+| 2 | plain CNN 16-24-24-32 | 0.8650 | +0.0125 | +0.0116 to +0.0134 | +0.0062 | +0.0194 | +0.0080 |
+| 11 | fast LUT 3×3 pattern | 0.8634 | +0.0110 | +0.0100 to +0.0119 | +0.0039 | +0.0187 | +0.0055 |
+| 9 | DCT h32 | 0.8620 | +0.0096 | +0.0085 to +0.0107 | +0.0009 | +0.0185 | +0.0047 |
+| 9 | DCT fixed | 0.8541 | +0.0016 | +0.0009 to +0.0024 | −0.0034 | +0.0065 | −0.0000 |
+| 12 | DirNet fixed | 0.8534 | +0.0009 | +0.0003 to +0.0015 | −0.0031 | +0.0048 | −0.0004 |
+| 1 | bicubic (`Resize` graph) | 0.8524 | +0.0000 | | | | |
+| 6 | reparam 32-16 | 0.8524 | −0.0000 | | | | |
+| 1 | bilinear | 0.8437 | −0.0087 | −0.0096 to −0.0078 | −0.0019 | −0.0138 | −0.0106 |
+| 1 | nearest | 0.8365 | −0.0159 | −0.0167 to −0.0151 | −0.0163 | −0.0126 | −0.0252 |
+
+- **The client's told 24×2 is the best model**, clear of every other range, and the only one
+  besides q24 whose gain holds as the slice QP rises (+0.031 to +0.040 in every bin). A model
+  not told the QP keeps at QP 46–52 about half its gain at 0–18, or less: notebooks 2–16
+  trained on x264 at 0.2–1 bpp, which seldom reaches those QPs.
+- **On screens the leaders are within 0.004 of each other**: notebook 10's LUT SDY x2
+  (+0.0493), notebook 8's three graphs (+0.0456 to +0.0483) and the told 24×2 (+0.0474); no
+  range by kind was computed to separate them. On video and photos the told 24×2 leads the
+  next model by +0.007 to +0.008.
+- **q24 is mid-table** (+0.0186), level with notebook 3's web 32-16, and weakest on clean
+  pictures: +0.0139 at QP 0–18, +0.0212 on screens.
+- **Four graphs do little or nothing**: notebook 6's reparam graph is bicubic to four places in
+  every bin; notebook 9's DCT fixed and notebook 12's DirNet fixed gain under +0.002 and fall
+  below bicubic from QP 30–34 up. Notebook 1's bicubic `Resize` graph scores what
+  `models.bicubic` does.
+- A new model is added to this table by adding its graph to the notebook's `GRAPHS`; graphs
+  already scored are read back from `scoreboard/`.
 
 The notebooks share their code through `helpers/`, so each one reads as a short list of
 steps: `models.py` holds the bicubic skip and the models built on it (`PlainUpscaler`,
@@ -1400,6 +1474,40 @@ as, and three times the SSIM loss's pull. On the validation patches, each the me
   next is mix 1 (`checkpoints/mix_runs/fast_q24_mix_1_seed*.pt`), through notebook 24's export
   cell, once the eye agrees.
 
+## A larger, more diverse set (`28_upscale_qp_diverse_pairs.ipynb`)
+
+Notebooks 22–27 train on notebook 21's pairs: YouTube video only (394 targets, one sequence of
+each training video and two of each test video measured), 8 patches a frame, no screens and no
+photos. Notebook 28 makes them again with notebook 21's lines, labels, bins and patch shape,
+and wider content: every sequence on disk measured with notebook 17's test, up to three
+targets a video; 1,000 drawn screens from two sets (the second, `raw/screens-s1/`, drawn for
+it with `screens.py --seed 1 --name screens-s1`); 400 DIV2K and Flickr2K photos; images as
+32-frame clips of a window sliding, zooming or still (`helpers/motion.py`); 4 patches a
+frame; and a `kind` label per patch, for scoring only. It writes `qp_diverse_pairs/` in
+`qp_slice_pairs/`'s format, so a notebook reads it by changing `PAIRS_DIR`.
+
+| | notebook 21 | notebook 28 |
+| --- | --- | --- |
+| training patches | 34,364 | **147,813** (video 46%, screens 37%, photos 16%) |
+| validation patches | 9,628 | **24,216** (video 39%, screens 46%, photos 15%) |
+| sources, train / validation | 306 / 88 | 2,603 / 426 |
+| videos, train / validation | 306 / 54 | 540 / 72 |
+| slice QP 42+, training | 3,190 | 17,732 |
+| NVENC P frames at 46–52, train / validation | 430 / 64 | 2,630 / 422 |
+| bicubic SSIM-Y, validation | 0.9045 | 0.8524 (video 0.9034, screens 0.8487, photos 0.7322) |
+
+- **A score on this set is not comparable with one on notebook 21's**: it is harder by its
+  content. Its video alone reads about what notebook 21's set does under bicubic (0.9034
+  against 0.9045).
+- **The label still means what it did**: within every kind and line, bicubic falls as the
+  slice QP rises, up to 42–46. NVENC's frames are nearer the target than x264's at the same
+  QP from 18–26 to 38–42 in every kind, as notebook 21 found on video.
+- Screens and photos fill the top bins that the video leaves thin: notebook 17's targets are
+  cheap to code, and a detailed picture sliding at 0.25 Mbit/s is not.
+- 80 minutes to build (12 sources at once, through `degrade.degrade_many`: notebook 21's
+  `degrade` holds the GIL while it pipes a clip, so in threads it ran slower than one at a
+  time). Trains nothing yet.
+
 ## Tiling geometry
 
 Inference on the page runs on fixed tiles, not on frames: one pinned input size, one
@@ -1773,6 +1881,9 @@ decide.
 
 ## Next
 
+- **Train on notebook 28's set**: notebook 22's told 24×2 with `PAIRS_DIR` at
+  `qp_diverse_pairs/`, scored with notebook 23's shipped graph on both sets, by kind. If it
+  helps, retrain q24 (notebooks 24 and 27) on it before exporting.
 - **Measure notebook 24's q24 on the GTX 1660 Ti, and look at its pictures**: Run 8 of
   `bottlenecks_gtx1660ti.md` with `upscale_fast_q24_frozen_skip_fp16_tile320x180_b16.onnx`
   (at most 9.2 ms), then the client with
