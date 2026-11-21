@@ -33,6 +33,11 @@ MODELS_DIR = Path(__file__).resolve().parents[3] / "dist" / "upscale"
 # The step every model on the benchmark page is compared at.
 TILE_STEP = 128
 
+# What the client runs (`publish`): tiles that add 320x180 LR pixels to the picture (notebook 5), or a whole
+# 1080p frame.
+CLIENT_STEP = (320, 180)
+FRAME = (1920, 1080)
+
 # Operators the browser's WebGPU backend runs fast. Anything else may fall back to the CPU.
 BUDGET = {"Conv", "Relu", "LeakyRelu", "Add", "Concat", "DepthToSpace", "Constant"}
 
@@ -288,6 +293,36 @@ def to_frame(info, filename, width=1920, height=1080, models_dir=None):
     write_metadata(target, {**metadata, "cpu_ms": None, "label": f"{label} · whole frame",
                             "step": width // scale, "step_h": height // scale, "halo": halo})
     return describe(target)
+
+
+def publish(model, name, halo, label, scale=2, float16=False, step=CLIENT_STEP, frame=FRAME, reshape=True):
+    """Write `model` the two ways the client can run it, for the browser benchmark: `{name}_tile{w}x{h}.onnx`, one tile
+    (the `step` plus `halo` on every side), and `{name}_tile{w}x{h}_frame.onnx`, a whole `frame` in one run; with
+    `float16`, also `{name}_fp16_...` copies of both (`to_float16`). The frame graph is the tile's reshaped
+    (`to_frame`), or with `reshape=False` exported again at the frame's size, for a graph that fixes shapes inside.
+    Each is checked against the torch model and timed on this CPU, with one line printed for each. Returns the graphs'
+    infos."""
+    width, height = step
+    tile_shape = (height + 2 * halo, width + 2 * halo)
+    frame_shape = (frame[1] // scale + 2 * halo, frame[0] // scale + 2 * halo)
+    tile = export(model, f"{name}_tile{width}x{height}.onnx", tile_shape, label=f"{label} fp32", halo=halo)
+    frame_file = f"{name}_tile{width}x{height}_frame.onnx"
+    whole = (to_frame(tile, frame_file, *frame) if reshape else
+             export(model, frame_file, frame_shape, label=f"{label} fp32 · whole frame", halo=halo))
+    graphs = [(tile, tile_shape, np.float32), (whole, frame_shape, np.float32)]
+    if float16:
+        for info, shape, _ in list(graphs):
+            half = to_float16(info, info["path"].name.replace(name, f"{name}_fp16", 1))
+            label_32 = read_metadata(onnx.load(str(half["path"])))["label"]
+            write_metadata(half["path"], {"label": label_32.replace("fp32", "fp16")})
+            graphs.append((half, shape, np.float16))
+    for info, shape, dtype in graphs:
+        tolerance = 2e-3 if dtype == np.float32 else 4e-3
+        check_graph(info["path"], model, np.random.rand(1, 3, *shape).astype(np.float32), dtype, tolerance)
+        ms = time_graph(info["path"], shape, dtype)
+        annotate(info, cpu_ms=round(ms, 2))
+        print(summary_line(info, ms))
+    return [info for info, _, _ in graphs]
 
 
 # ---------------------------------------------------------------- running graphs

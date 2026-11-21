@@ -78,8 +78,8 @@ class PatchPairs(Dataset):
         self.augment = augment
         self.conditions = None
         if told:
-            columns = [i for part in told for i in CONDITION_PARTS[part]]
-            self.conditions = torch.from_numpy(conditions(directory, split, manifest)[:, columns])[:, :, None, None]
+            chosen = conditions(directory, split, manifest)[:, columns(told)]
+            self.conditions = torch.from_numpy(chosen)[:, :, None, None]
         elif condition is not None:
             # one row per patch: its source's condition
             rows = np.zeros((len(self.lr), len(condition(self.sources[0]))), np.float32)
@@ -118,6 +118,11 @@ def _to_tensor(image):
 # `degrade.condition` puts it (log2 of the bits per pixel against the host's default, and a 1 for no codec).
 CONDITION_PARTS = {"qp": [0], "deblocked": [1], "intra": [2], "bpp": [3, 4]}
 QP_MAX = 51
+
+
+def columns(told):
+    """The columns of `conditions` that `told` (parts of `CONDITION_PARTS`) picks, in its order."""
+    return [i for part in told for i in CONDITION_PARTS[part]]
 
 
 def conditions(directory, split, manifest):

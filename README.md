@@ -93,54 +93,53 @@ anything else. Run whichever notebooks you want on the page:
   nearest, bilinear, bicubic and Lanczos-3; exports the three ONNX can express as a `Resize`
   node. Bicubic is the bar a learned model must beat.
 - `src/upscale/02_upscale_nn.ipynb` — a plain CNN that makes the whole picture itself, with
-  no bicubic shortcut.
-- `src/upscale/03_upscale_web.ipynb` — the same model shaped for the browser, published at three
-  precisions and two tile sizes.
+  no bicubic shortcut, at two shapes.
+- `src/upscale/03_upscale_web.ipynb` — the residual 32-16: bicubic as a frozen convolution plus
+  a learned correction, trained at three seeds; the best on the select split is published in
+  float32 and float16.
 - `src/upscale/04_upscale_strategies.ipynb` — the strategies worth keeping (the 32-16 control,
-  its luma-only twin and notebook 7's residual blocks) under notebook 3's recipe on the
-  stream-degraded data, judged against the spread of the control at three seeds, publishing
-  the best two at the 320×180 step.
+  its luma-only twin, and luma with residual blocks), judged against the spread of the control
+  at three seeds.
 - `src/upscale/05_upscale_geometry.ipynb` — not a model: the *shape* one runs at. Sweeps tile size,
   batch and scale factor, charges everything in nanoseconds per output pixel, and publishes
   a family of geometries for the page to measure on whatever GPU is in front of it.
-- `src/upscale/06_upscale_reparam.ipynb` — the reparameterized 32-16 the first strategy sweep
-  picked, trained on the stream-degraded data and published at the 320×180 step a client
-  runs, with bilinear and bicubic beside it - the page's 320×180 baselines. Notebook 4 no
-  longer supports that pick.
-- `src/upscale/07_upscale_luma.ipynb` — a residual model that corrects brightness only (colour
-  stays bicubic), with residual blocks, published at the same 320×180 step.
-- `src/upscale/08_upscale_screens.ipynb` — notebook 7's model trained with desktop screens in
-  the data, blind and told how the stream was made (its bitrate, and the host's encoder path),
-  scored on screens, photos and video apart; published at the 320×180 step.
+- `src/upscale/06_upscale_reparam.ipynb` — the reparameterized 32-16: three branches a
+  convolution while training, merged into one to ship.
+- `src/upscale/07_upscale_luma.ipynb` — the residual model that corrects brightness only (colour
+  stays bicubic), with residual blocks: notebook 4's run, published as `upscale_luma`.
+- `src/upscale/08_upscale_screens.ipynb` — notebook 7's model told the stream's bitrate and line,
+  against the blind model at three seeds.
 - `src/upscale/09_upscale_dct.ipynb` — a model that only guesses gains: the DCT of overlapping
   luma blocks, one learned gain per coefficient (fixed, or decided per block by a tiny
-  network), and a fixed windowed IDCT; colour stays bicubic. Published at the 320×180 step.
+  network), and a fixed windowed IDCT; colour stays bicubic.
 - `src/upscale/10_upscale_lut.ipynb` — look-up tables instead of arithmetic (SR-LUT, MuLUT): a
   network that reads four luma pixels trains as itself, answers every question it can be asked
-  into a table of megabytes, and is thrown away; the model reads five corners of a table cell
-  per look-up, in four rotations, through one to three tables and one or two stages. Colour
-  stays bicubic. Published at the 320×180 step.
+  into a table of megabytes, and is thrown away; the tables are then fine-tuned. Colour stays
+  bicubic.
 - `src/upscale/11_upscale_fastlut.ipynb` — look-up tables read at one exact address, with no
   interpolation: a table addressed by the centre and binned differences from it, and a 3×3
-  sign pattern that looks up a filter. Exports float32 only, at the 320×180 step.
+  sign pattern that looks up a filter. Exports float32 only.
 - `src/upscale/12_upscale_dirnet.ipynb` — a directional upscaler: four learned 1D
   interpolators per sub-pixel (row, column, two diagonals), chosen per pixel by a tiny
-  network. Three variants, from one fixed 5×5 filter to a blend with a learned correction;
-  published at the 320×180 step.
-- `src/upscale/13_upscale_hints.ipynb` — not a model: what a few bits from the host's
-  full-resolution frame are worth - a content label to route on, or filters the host fits on
-  the client's output. Trains nothing and exports nothing.
-- `src/upscale/14_upscale_postfilter.ipynb` — notebook 13's post-filter on whole streamed
-  clips, refitted on a schedule, against a plain stream at the same total bits. Exports
-  nothing.
-- `src/upscale/15_upscale_tradeoff.ipynb` — every published client and the hint in one
-  currency, bandwidth: what bitrate plain bicubic would need for the same quality. Exports
-  nothing.
+  network. Three variants, from one fixed 5×5 filter to a blend with a learned correction.
+- `src/upscale/15_upscale_tradeoff.ipynb` — every published client in one currency, bandwidth:
+  what bitrate plain bicubic would need for the same quality. Exports nothing.
+- `src/upscale/16_upscale_distill.ipynb` to `27_upscale_mixed_loss.ipynb` — distillation and a
+  leaky ReLU (16, which publishes the cheap tier), the stream's QP (17), models told the slice
+  QP, loop filter and I or P that the client reads off every frame (18–22), the told model as
+  desktop-streamer runs it (23, `dist/upscale/client/upscale.onnx`), a told model for 60 fps on
+  a GTX 1660 Ti (24, `client/upscale_fast.onnx`), and the JND loss alone and mixed with the
+  SSIM loss (26, 27).
+- `src/upscale/29_upscale_scoreboard.ipynb` — every notebook's recorded validation scores in
+  one table.
+
+Every model notebook trains with one recipe (`training.fit`) on notebook 0's training split,
+picks its best epoch on the select split, and records its models' scores on the validation
+split, so every model can be compared with every other.
 
 The code the notebooks share lives in `src/upscale/helpers/`: `models.py` (the bicubic skip
 and the models built on it), `training.py` (loading the patches, the training loop, scoring,
-checkpoints), `speed.py` (timing), `postfilter.py` (the host-fitted post-filter of
-notebooks 13–15), `metrics.py` (**how a frame is scored**, in Y'CbCr with
+checkpoints), `speed.py` (timing), `metrics.py` (**how a frame is scored**, in Y'CbCr with
 luma weighted six times either chroma channel, because that is the ratio an eye reads them
 at), `tiles.py` (the tile geometry: how a frame is cut into tiles and what each costs) and
 `webexport.py` (the export call, and the one place the tile step and the WebGPU operator
@@ -301,19 +300,28 @@ desktop-streamer-ai/
 │       ├── 00_data_preprocess.ipynb  the one dataset: sources streamed through x264 and NVENC, labelled patches, train/select/val
 │       ├── 01_upscale_dummy.ipynb    static resampling filters, the bar to beat
 │       ├── 02_upscale_nn.ipynb       a first PyTorch model: a plain CNN, no bicubic shortcut
-│       ├── 03_upscale_web.ipynb      the same model, shaped for the browser
+│       ├── 03_upscale_web.ipynb      the residual 32-16: bicubic plus a learned correction
 │       ├── 04_upscale_strategies.ipynb  three strategies, one recipe, judged against seed noise
 │       ├── 05_upscale_geometry.ipynb  the shape to run one at: tile, batch, scale, ns per pixel
-│       ├── 06_upscale_reparam.ipynb  the selected model, trained on the stream, published at 320x180
+│       ├── 06_upscale_reparam.ipynb  the 32-16 trained as three branches a layer, merged to ship
 │       ├── 07_upscale_luma.ipynb     residual blocks that correct brightness only; colour stays bicubic
-│       ├── 08_upscale_screens.ipynb  the same, trained with desktop screens, blind and told the stream
+│       ├── 08_upscale_screens.ipynb  the same, told the stream's bitrate and line
 │       ├── 09_upscale_dct.ipynb      gains on the DCT of overlapping luma blocks; colour stays bicubic
 │       ├── 10_upscale_lut.ipynb      look-up tables: megabytes of stored answers, a few hundred ops a pixel
 │       ├── 11_upscale_fastlut.ipynb  look-up tables read at one exact address, no interpolation
 │       ├── 12_upscale_dirnet.ipynb   four 1D interpolators per pixel, and a network choosing between them
-│       ├── 13_upscale_hints.ipynb    what bits from the host's full-resolution frame are worth
-│       ├── 14_upscale_postfilter.ipynb  the host-fitted post-filter on whole streamed clips
 │       ├── 15_upscale_tradeoff.ipynb  bits, compute and quality in one currency: bandwidth
+│       ├── 16_upscale_distill.ipynb  distillation, a leaky ReLU and an edge-weighted loss
+│       ├── 17_upscale_qp.ipynb       the QP of the host's stream, by bandwidth and content
+│       ├── 18_upscale_qp_models.ipynb  blind, told the slice QP, or a high-QP specialist
+│       ├── 19_upscale_qp_told.ipynb  how exact the QP has to be, and the biases as a line in it
+│       ├── 20_upscale_qp_split.ipynb  a low and a high QP model, each told the QP
+│       ├── 22_upscale_qp_slice_models.ipynb  told the slice QP, the loop filter and I or P
+│       ├── 23_upscale_qp_export.ipynb  that model as desktop-streamer runs it: client/upscale.onnx
+│       ├── 24_upscale_fast.ipynb     a told model for 60 fps at 720p on a GTX 1660 Ti
+│       ├── 26_upscale_jnd_loss.ipynb  the JND loss against the SSIM loss
+│       ├── 27_upscale_mixed_loss.ipynb  the two losses together
+│       ├── 29_upscale_scoreboard.ipynb  every notebook's recorded scores in one table
 │       ├── helpers/                  modules the notebooks import, never run on their own
 │       │   ├── sources.py            reads the downloaded datasets back
 │       │   ├── motion.py             a still image as a moving clip: slide, zoom or hold
@@ -323,7 +331,6 @@ desktop-streamer-ai/
 │       │   ├── training.py           loaders, the training loop, scoring, checkpoints
 │       │   ├── metrics.py            how a frame is scored: Y'CbCr, luma weighted 6:1:1
 │       │   ├── speed.py              timing and multiply-accumulate counts
-│       │   ├── postfilter.py         the host-fitted post-filter: classes, fits, bits
 │       │   ├── tiles.py              the tiling geometry: step, halo, kept, which tile to run
 │       │   └── webexport.py          the export call, the tile step and the op budget
 │       ├── data/                     gitignored — samples the notebooks write

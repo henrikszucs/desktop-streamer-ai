@@ -85,165 +85,89 @@ Run in order, from this folder:
   Lanczos-3 +0.0007, PIL's bicubic −0.0008, bilinear −0.0087, nearest −0.0159 SSIM-Y.
   Exports nearest, bilinear and bicubic at the client's 320×180 step and as a whole frame.
   See "Static methods".
-- `02_upscale_nn.ipynb` — **the PyTorch attempt.** Trains `PlainCNN`, an ESPCN-shaped
-  network with no bicubic shortcut that makes the whole picture itself, on the patch
-  pairs, measures it the same way, writes `checkpoints/upscale_nn.pt`, and exports it.
-- `03_upscale_web.ipynb` — **the model shaped for the browser.** Same data, same metric; every
-  design decision made against a measurement taken in the browser rather than in torch.
-  Trains `PlainUpscaler` (`helpers/models.py`), publishes it at three precisions and two
-  tile sizes, and carries the ladder of what each optimisation cost and bought.
-- `04_upscale_strategies.ipynb` — **three strategies under one recipe**, on the
-  stream-degraded set, in notebook 3's order (data → models → speed → train → save →
-  export): the 32-16 control, the same body correcting luma only, and notebook 7's
-  residual blocks — the three the eight-strategy sweep below left standing; the other five
-  are not trained again. Every strategy's starting point is checked, and its speed
-  estimated, before it trains; every run is checkpointed, so a re-run only loads them.
-  It also measures what a difference has to be worth before it is one — the control at
-  three seeds — which is still the most useful thing in it. Publishes the best two graphs
-  at the 320×180 step.
+- `02_upscale_nn.ipynb` — **a first learned upscaler**: `PlainCNN`, ESPCN-shaped with no
+  bicubic shortcut, at two shapes (16-24-24-32, and 64-32). Exports both.
+- `03_upscale_web.ipynb` — **the residual 32-16** (`models.PlainUpscaler`): bicubic as a frozen
+  5×5 convolution plus a learned correction that starts at zero. Trained at three seeds, keeping
+  the best on the select split (one seed can stall at bicubic). Exports the kept run in float32
+  and float16, and scores the float16 graph on the val split.
+- `04_upscale_strategies.ipynb` — **three strategies under one recipe**: the 32-16 control
+  (notebook 3's three seeds, the ruler for luck; a run that stalled at bicubic is left out of
+  it), the same body correcting luma only, and luma with two residual blocks. Exports
+  `luma 32-16`.
 - `05_upscale_geometry.ipynb` — **not a model: the shape one runs at.** Tile size, batch and
   scale factor, swept on the CPU and then measured in the browser on the card, charged in
   **nanoseconds per output pixel** because a run is a tile and a rate of runs cannot compare
-  two tile sizes. It is what chose 640×360, and what `tiles.plan_tiling` implements.
-- `06_upscale_reparam.ipynb` — **the selected model on the stream-degraded set.** The
-  reparameterized 32-16 the strategy sweep chose, trained on the new patch set as one run
-  (notebook 4 measures how far apart seeds land; it used to train four and keep the best).
-  The run trains until it has converged - the learning rate halves whenever the score
-  stalls, and the run stops once a hundredth of the starting rate brings nothing more - and
-  saves a checkpoint every epoch. The sweep's 1e-3 does not learn on this data: 100 epochs
-  at 1e-3 ended within 0.001 dB of bicubic, and a 15-epoch run at 1e-3 and an 8-epoch one at
-  3e-3 never beat it, while 1e-4 was +0.14 dB after 5 epochs and still rising - so the run
-  starts at 1e-4. The model is measured against bilinear, bicubic and Lanczos-3 overall and by
-  bitrate and content, collapsed, checkpointed to `checkpoints/upscale_reparam.pt`, and
-  published at the client's 320×180 step (float32, float16 and a whole-1080p-frame graph)
-  with bilinear and bicubic beside it as the page's baselines. Its graphs in `dist/upscale/`
-  are from a run on 2026-10-12, on the patch set before screens were added; the notebook
-  has not been run since and keeps no outputs. Its premise has not held up: the strategy sweep re-run on this data
-  finds reparameterization worth nothing measurable, and explains the 1e-3 failure — the
-  branches switch off 14 of the 16 narrow channels within 20 steps (see "Strategies").
-- `07_upscale_luma.ipynb` — **a residual model that corrects brightness only.** Colour is
-  bicubic and never touched; the network adds one luma correction per output pixel, the
-  same value to R, G and B, with two residual blocks inside the 4-pixel halo. Same workflow
-  and loss as notebooks 2 and 3; published at the client's 320×180 step (float32, float16,
-  whole frame). It is notebook 4's `luma 24 + 2 blocks` with the same seed and recipe, so
-  the two share one training file: whichever runs first trains it, the other loads it.
-- `08_upscale_screens.ipynb` — **notebook 7's model on a set with desktop screens, blind and
-  told how the stream was made.** Trains it blind at three seeds (the ruler), then told the
-  bitrate (`degrade.condition`: what the client always knows, having asked for the
-  bandwidth, height and frame rate), then told the host's encoder path too (the downscale
-  filter and the loop filter). A told model adds one shift per channel after the stem and in
-  each block, which folds exactly into the biases for a given stream, so it ships as the
-  same single-input graph, one per bitrate. Scored on screens, photos and video apart, by
-  display scale, bitrate and filter, and on what the host sends today; notebook 4's model,
-  trained before there were screens, is scored on the same set. Screens are worth +0.019
-  SSIM-Y on screens over notebook 4's model, the bitrate is worth nothing, and the path
-  +0.0021 SSIM-Y overall — see "Desktop screens and a known stream". It publishes the told
-  model baked for the host's path today at 0.2, 0.46 and 1.0 bpp, and only the 0.46 graph
-  earns its place. Since the bitrate alone bought nothing, the notebook now trains only the
-  blind model (three seeds) and the model told the bitrate and the path; the bitrate-only
-  run is recorded here and not trained again.
-- `09_upscale_dct.ipynb` — **a model that only guesses gains.** Luma is the DCT of 8×8 blocks
-  every 4 px, one learned gain per coefficient of the 16×16 spectrum, and a windowed IDCT
-  whose halves overlap and add up to exactly 1; colour is bicubic. The 16-point DCT of a
-  nearest-neighbour block is its 8-point DCT mirrored into four quadrants, so the larger
-  spectrum is the small one copied, and with every gain at 1 the model is nearest neighbour
-  (checked, 7e-7). The transforms are fixed convolutions; what learns is the gains: *fixed*
-  (256 numbers, the same for every block), or *decided* per block by two 1×1 convolutions on
-  its coefficients, starting from the fixed gains as a frozen bias. Also measures the ceiling
-  — gains chosen from the truth — before training. All `Conv`, `Concat`, `DepthToSpace`,
-  `Relu`, `Add`, plus one `Mul` (the gains), which is outside the measured budget. Counted
-  from the graphs: 4,600 operations and 875 bytes per LR pixel for the fixed model, 6,104 and
-  1,061 deciding through 32 channels, against 28,120 and 2,536 for notebook 7's. The ceiling
-  is high — gains chosen from the truth reach 0.974 SSIM-Y on the inner 112 px, where
-  bicubic is at 0.905 — and the trained models far under it: 0.9107 fixed and 0.9172
-  deciding through 32, against 0.9049 for bicubic and 0.9292 for notebook 4's model. See
-  "Fewer operations".
-- `10_upscale_lut.ipynb` — **look-up tables instead of arithmetic** (SR-LUT, MuLUT). A
-  network that reads four luma pixels trains as itself; then it answers every question it
-  can be asked at 17 points along each tap, the answers are a table, and the network is
-  thrown away. The model reads a cell's five corners per look-up (simplex interpolation), for
-  each kernel (S, D, Y) in four rotations, through one or two stages; the tables are then
-  fine-tuned as the parameters (MuLUT's LUT-aware fine-tuning). Colour stays bicubic. The
-  two-stage `SDY x2` table is the best model on screens in this project (+0.064 SSIM-Y over
-  bicubic, against +0.043 for notebook 4's model) and the slowest graph on the page: 75 ms
-  for a 1080p frame — see "The browser benchmark". Publishes `S` and `SDY x2` at the 320×180
-  step.
-- `11_upscale_fastlut.ipynb` — **look-up tables read at one exact address.** The cost of
-  notebook 10's graphs is the interpolation (some sixty full-size tensors a stage), so this
-  reads one entry with no weights: the row is the centre's level in 8 steps and the three
-  other taps' differences from it in 19 bins, fine near 0 and coarse far from it (S and
-  `SDY x2`, MuLUT's kernels as before), or a 3×3 neighbourhood's pattern of signs (3⁸ rows),
-  whose row is a filter applied to the differences. Float32 only, because a float16 tap can
-  round into the neighbouring row. Three of its operators had no WebGPU kernel and ran on
-  the CPU; rewritten (see "Results at the client's tile"), its graphs run in 2.3–7.3 ms a
-  1080p frame. Binning costs what interpolation bought: `SDY x2` scores 0.9267 SSIM-Y and
-  +0.048 on screens, against notebook 10's 0.9343 and +0.064, and `S` 0.9238 (three seeds,
-  0.0000 apart) against 0.9251. The 3×3 pattern filter is worse than `S` (0.9188). Trained
-  in 72 minutes on the RTX 3090.
-- `12_upscale_dirnet.ipynb` — **a directional upscaler.** Every sub-pixel gets four learned
-  1D interpolators, along its row, its column and both diagonals, each starting as the
-  cubic kernel along its line; a predictor reading 7×7 LR pixels chooses between them per
-  pixel (a softmax) and a gate says how far to move from bicubic toward the blend. B blends
-  the same way everywhere (one 5×5 convolution), C chooses per pixel, D adds a learned
-  correction. C gains +0.048 SSIM-Y on screens at a third of notebook 4's operations; D beats
-  notebook 4's model on screens and by 0.0011 SSIM-Y overall.
-- `13_upscale_hints.ipynb` — **what the host's full-resolution frame is worth.** Trains
-  nothing. Three hints, priced in bits: a content label per tile to route between models, a
-  class-wise 5×5 filter on bicubic fitted by the host (what VVC's adaptive loop filter does),
-  and the same as a post-filter on every published model. Routing is worth nothing; the
-  post-filter is worth +0.0065 SSIM-Y and +0.87 dB luma on notebook 4's model for 6.1 kbit an
-  update. See "Hints from the host".
-- `14_upscale_postfilter.ipynb` — **the post-filter on a real stream.** Whole 720p clips, the
-  host fitting on its own decoded frames on a schedule (every frame, every 5th, a frame
-  late, once a clip), scored against the plain stream at the same total bits, read off its
-  own rate curve. Every 5th frame is the schedule: 1–1.6% of the video's bits, and positive
-  at every bitrate and kind.
+  two tile sizes. It is what chose 640×360, and what `tiles.plan_tiling` implements. Times
+  notebook 3's model.
+- `06_upscale_reparam.ipynb` — **the reparameterized 32-16**: notebook 3's body trained as three
+  branches a convolution and merged into one, at a learning rate of 1e-4. Scored beside the
+  control's three seeds; exports the merged graph.
+- `07_upscale_luma.ipynb` — **the luma model** (notebook 4's `luma 24 + 2 blocks`, loaded from
+  its run): colour is bicubic, and the network adds one correction per output pixel to R, G
+  and B alike. Checks that the trained model leaves colour untouched and publishes it as
+  `upscale_luma`.
+- `08_upscale_screens.ipynb` — **a model told the bitrate and the line** (the loop filter):
+  what the client knows of its stream without reading a frame, as `models.ToldLuma`'s shifts,
+  against the blind model at three seeds. A told model bakes into the blind graph for one stream.
+- `09_upscale_dct.ipynb` — **a model that only guesses gains** on the DCT of 8×8 blocks every
+  4 px, mirrored into a 16×16 spectrum and windowed back: the *fixed* gains, and gains
+  *decided* per block through 8 (three seeds) and 32 channels on top of them.
+- `10_upscale_lut.ipynb` — **look-up tables instead of arithmetic** (SR-LUT, MuLUT): networks
+  that read four luma pixels (S at three seeds, SDY, SDY×2), filled into tables at 9, 17 and 33
+  points a tap, then the tables fine-tuned as the parameters. Exports the best table and `S`.
+- `11_upscale_fastlut.ipynb` — **look-up tables read at one exact address**: a binned table
+  (the centre's level and the three other taps' differences, `S` at three seeds and `SDY x2`)
+  and a 3×3 pattern filter. Float32 only.
+- `12_upscale_dirnet.ipynb` — **a directional upscaler**: four learned 1D interpolators a
+  sub-pixel; B blends them the same everywhere, C chooses per pixel, D adds a learned
+  correction. Exports all three.
 - `15_upscale_tradeoff.ipynb` — **bits, compute and quality in one currency.** For every
-  published client, with and without the hint, how many bits plain H.264 and bicubic would
-  need for the same SSIM-Y, over the bits the client's stream used: its worth in
-  bandwidth. See "Bits against compute".
-- `16_upscale_distill.ipynb` — **better training for bodies already here.** Distillation
-  (half the loss against notebook 8's model's picture) for the luma 32-16, an edge-weighted
-  L1 for notebook 8's told model, and a leaky ReLU on both, each to convergence at two seeds
-  where it mattered. The leaky ReLU is what pays, and only on the 32-16: it ends the 32-16's
-  seed lottery, and the notebook publishes it as the cheap tier. See "Distillation, edges and
-  a leaky ReLU".
-- `17_upscale_qp.ipynb` to `23_upscale_qp_export.ipynb` — **the told model the client runs:**
-  the stream's QP, then the slice QP, loop filter and frame type the client reads off every
-  frame, trained into notebook 8's body (22) and exported for desktop-streamer as
-  `dist/upscale/client/upscale.onnx` and its float16 twin (23). Not written up here yet; each
-  notebook's last section has its results.
+  published client, how many bits plain H.264 and bicubic would need for the same SSIM-Y, over
+  the bits the client's stream used: its worth in bandwidth, on whole streamed clips of the val
+  sources. See "Bits against compute".
+- `16_upscale_distill.ipynb` — **distillation, a leaky ReLU, and an edge-weighted loss**: the
+  luma 32-16 plain, leaky and distilled from notebook 8's told model; the told model with an
+  edge-weighted L1 and with a leaky ReLU. Exports the leaky 32-16 as the cheap tier.
+- `17_upscale_qp.ipynb` — **QP statistics**: x264's QP of every frame of the host's stream by
+  bandwidth, stream size and content. Describes the stream; trains nothing.
+- `18_upscale_qp_models.ipynb` — **blind, told the slice QP, or a specialist**: notebook 7's
+  body told each patch's slice QP (two seeds), and a blind model for QP 38 and up, against the
+  blind model's three seeds, by slice QP bin.
+- `19_upscale_qp_told.ipynb` — **how exact the QP has to be, and how it ships**: notebook 18's
+  told model given a wrong QP, and the check that a told model's biases are a line in the QP.
+  Trains nothing.
+- `20_upscale_qp_split.ipynb` — **a low and a high QP model**, each told the QP, switched at
+  QP 30, against notebook 18's one told model; and what the switch does to the picture.
+- `22_upscale_qp_slice_models.ipynb` — **told the slice QP, the loop filter and I or P**: what
+  the client reads off every frame, against told the QP alone and blind, by line, frame type
+  and QP.
+- `23_upscale_qp_export.ipynb` — **notebook 22's model as the browser runs it**: `input` and a
+  three-number `condition`, the biases computed from it, exported as
+  `dist/upscale/client/upscale.onnx` and its float16 twin, checked against the trained model.
 - `24_upscale_fast.ipynb` — **a told model for 60 fps at a 1280×720 stream on a GTX 1660
   Ti**, as a drop-in for notebook 23's graph. It measures every layer of the 1660 Ti's cost
-  table again on the RTX 3090 to predict that card from this one. It then trains a body that
-  runs at a quarter of the pixels, and exports `client/upscale_fast.onnx` and its float16
-  twin. See "60 fps on a GTX 1660 Ti".
-- `25_upscale_static.ipynb` — **the static filters, scored as the told models are**: on
-  notebook 21's 9,628 validation patches through `training.evaluate`, where bicubic reads
-  notebook 24's 0.9045 SSIM-Y and 33.55 dB. It includes notebook 1's bicubic + unsharp mask
-  and the mask tuned on the training split. Trains nothing and exports nothing. See "Static
-  methods".
+  table again on the RTX 3090 to predict that card from this one, trains bodies that run at a
+  quarter of the pixels, chooses one on the select split, and exports `client/upscale_fast.onnx`
+  and its float16 twin. See "60 fps on a GTX 1660 Ti".
 - `26_upscale_jnd_loss.ipynb` — **the JND loss against the SSIM loss** on the two best bodies,
-  notebook 22's told 24×2 and notebook 24's q24: the perceptual repo's differentiable JND
-  metric as the loss, same data, seeds and schedule, judged by SSIM-Y, PSNR, JND, LPIPS, GMSD
-  and pictures of patches and whole frames. Exports nothing. See "The JND loss".
-- `27_upscale_mixed_loss.ipynb` — **the SSIM loss and the JND loss together**: the SSIM loss
-  + λ × the JND loss (spec defaults) at λ = 0.1, 0.3 and 1, on the same two bodies, seeds and
-  schedule, against both losses alone; λ set from the two losses' measured gradients. Exports
-  nothing. See "The SSIM and JND losses together".
-- `28_upscale_qp_diverse_pairs.ipynb` — **notebook 21's pairs, larger and more diverse**: the
-  same lines, labels and bins from 1,396 YouTube targets (every sequence measured with notebook
-  17's test, up to three a video), 1,000 drawn screens and 400 photos, 4 patches a frame and a
-  `kind` label per patch: 147,813 training and 24,216 validation patches in
-  `qp_diverse_pairs/`, 4.3 and 2.5 times notebook 21's. Trains nothing. See "A larger, more
-  diverse set".
-- `29_upscale_scoreboard.ipynb` — **every published model on one set** (its trained graphs since
-  deleted, see the status note; it now scores notebook 1's filters): each of the 26
-  distinct graphs in `dist/upscale/` run through onnxruntime on notebook 28's 24,216
-  validation patches, told graphs given each patch's slice QP, loop filter and frame type;
-  SSIM-Y and luma PSNR against `models.bicubic`, by kind and slice QP. Checked first against
-  the numbers recorded on notebook 21's set. Trains and exports nothing. See "Every model on
-  one set".
+  notebook 22's told 24×2 and notebook 24's q24: the perceptual repo's differentiable JND metric
+  as the loss (`helpers/jnd_settings.json`), judged by SSIM-Y, PSNR, JND, LPIPS, GMSD and
+  pictures of patches and whole frames. Exports nothing.
+- `27_upscale_mixed_loss.ipynb` — **the SSIM loss and the JND loss together**: the SSIM loss +
+  λ × notebook 26's JND loss at λ = 0.1, 0.3 and 1, on the same two bodies and seeds, against
+  both losses alone. Exports nothing.
+- `29_upscale_scoreboard.ipynb` — **every model on one set**: every notebook's recorded
+  validation scores in one table against notebook 1's bicubic, by kind, line and slice QP.
+
+Notebooks 13 and 14 (hints from the host's full-resolution frame, and the host-fitted
+post-filter on a stream), 21 (notebook 17's pairs relabelled), 25 (the static filters on
+notebook 21's set) and 28 (the pairs notebook 0 now builds) were deleted on 2026-11-21.
+
+Every model notebook trains with the one recipe in `training.fit` (Adam at 1e-3, batches of
+32, `metrics.ssim_l1_loss`, epochs of 34,368 patches, the best epoch by SSIM-Y on the select
+split, halving at plateaus until it converges) and records its models' per-patch scores on the
+val split (`training.record`), so notebook 29 can set every model beside every other.
 
 ## Every model on one set (`29_upscale_scoreboard.ipynb`)
 
@@ -1191,58 +1115,6 @@ three seeds 0.0003 (notebook 10, which notebook 12 borrows).
   screens, where it is within 0.0013 of the table. It costs what notebook 4's does - and in
   the browser that is 3.9 ms a 1080p frame against the table's 75 (see "The browser
   benchmark").
-
-## Hints from the host (notebooks 13–14)
-
-The host has the full-resolution frame it shrank. A *hint* is a few bits it works out from it
-and sends with the stream. Notebook 13 prices three, on the validation patches with the
-host fitting on each source's other 7 frames; notebook 14 takes the one that paid to whole
-720p clips. The host's default stream is 0.46 bits per LR pixel, about 238 kbit a frame.
-
-**A routing hint is worth nothing.** A label per tile (screen or not) sends screens to the
-table and the rest to notebook 4's model. Routing itself pays a little - 0.9361 SSIM-Y,
-+0.0018 over the table alone - and the client does it with its own classifier on the LR, at
-zero bits (87% right). The host's label adds +0.0004 to that and the host's choice of the best
-of three models per tile +0.0010: nothing worth even the 127–201 bits a frame they cost.
-
-**A post-filter fitted by the host is.** The client sorts every LR pixel into 25 classes by
-the direction and strength of its edges (VVC's adaptive loop filter's rule); the host fits,
-per class, the 5×5 filter that best turns the client's picture into its own HR frame, and
-sends the coefficients as 10-bit differences from a zero-bit filter built into the client.
-On top of every published model, about 6.1 kbit an update:
-
-| client, ssim-y | alone | + built-in filters, zero bits | + the host's filters | the host's gain, ssim-y / dB |
-|---|---|---|---|---|
-| bicubic | 0.9049 | 0.9144 | 0.9239 | +0.0095 / +0.91 |
-| notebook 4 | 0.9292 | 0.9293 | 0.9358 | +0.0065 / +0.87 |
-| DirNet D | 0.9303 | 0.9300 | 0.9365 | +0.0065 / +0.94 |
-| `SDY x2` table | 0.9343 | 0.9340 | 0.9392 | +0.0052 / +0.94 |
-
-(bicubic's filter is four filters a class, one per sub-pixel, and 19.2 kbit an update.) The
-built-in filters help bicubic and buy nothing on a model, so on a model what pays is the
-host's knowledge of the frame, not the filter shape. Across sources,
-doubling the video's bitrate buys notebook 4's model +0.0143 ± 0.0062 SSIM-Y, which puts
-6.1 kbit of the same bits at +0.0005: the filter is worth about ten times its bits.
-
-**On a real stream** (notebook 14: 8 clips each of screens, photos and video, notebook 4's
-model, streamed the way the host sends today at five bitrates, and every hinted stream set
-against the plain one at the same *total* bits read off the plain stream's own curve):
-
-| schedule, at 0.46 bpp | screens | photos | video | cost, of the video's bits |
-|---|---|---|---|---|
-| every frame | +0.0053 / +0.43 | +0.0027 / +0.36 | +0.0034 / +1.30 | 5–8% |
-| every frame, used a frame late | +0.0047 / +0.38 | +0.0018 / +0.32 | +0.0029 / +1.17 | 5–8% |
-| **every 5th frame** | **+0.0049 / +0.40** | **+0.0020 / +0.33** | **+0.0030 / +1.14** | **1.1–1.6%** |
-| once a clip | −0.0043 / +0.34 | −0.0065 / +0.06 | +0.0019 / +1.03 | 0.2% |
-
-Gain over the client with only its built-in filter, SSIM-Y / dB luma. At the same total
-bits, every 5th frame is the only schedule positive at every bitrate and kind (+0.0006 to
-+0.0119 SSIM-Y); sent every frame it loses to the plain stream on photos below 0.7 bpp and
-on screens at 0.15, and sent once a clip it goes stale. A filter used one frame late keeps most of its gain, so the host
-need not delay a frame to fit one.
-
-The hint has no graph yet: what it costs on the client (about 280 operations an LR pixel,
-worked out in notebook 15) is an estimate, and no side channel for it exists in the stream.
 
 ## Bits against compute (`15_upscale_tradeoff.ipynb`)
 
