@@ -12,8 +12,12 @@ be sent fewer pixels than it displays.
 > been measured on the card. It keeps 69% of the told model's SSIM-Y gain (see "60 fps on a
 > GTX 1660 Ti"), with bicubic's colour.
 
+> **2026-11-21: the notebooks are running again on notebook 0's set**, one recipe, scored on one
+> validation split; "Notebook 0's set, notebook by notebook" has notebooks 1–9 so far, and their
+> graphs are back in `dist/upscale/`. Everything else below is on older sets.
+>
 > **2026-11-20: every trained graph was deleted from `dist/upscale/`**, to train the models again
-> on one set (notebook 28's); only notebook 1's three filters are left there. desktop-streamer
+> on one set; only notebook 1's three filters were left there. desktop-streamer
 > keeps its own copy of the graphs it runs. The sections below record what the deleted graphs
 > scored.
 >
@@ -22,8 +26,8 @@ be sent fewer pixels than it displays.
 > each frame's slice QP, loop filter and frame type. Notebooks 17–23, which made it, are not
 > written up below yet. The sections below were written up to notebook 16, when notebook 8's
 > model was the one to ship. Each section's numbers are on the set of its day; **every
-> published model on one set is in "Every model on one set"** (notebook 29), where the told
-> 24×2 leads at +0.0354 SSIM-Y over bicubic.
+> published model on notebook 28's set is in "Every published model on notebook 28's set"**
+> (notebook 29), where the told 24×2 leads at +0.0354 SSIM-Y over bicubic.
 >
 > **The best model overall is notebook 8's**: residual blocks correcting luma only (28,120
 > operations an LR pixel), trained with desktop screens in the data and told the host's
@@ -169,7 +173,64 @@ Every model notebook trains with the one recipe in `training.fit` (Adam at 1e-3,
 split, halving at plateaus until it converges) and records its models' per-patch scores on the
 val split (`training.record`), so notebook 29 can set every model beside every other.
 
-## Every model on one set (`29_upscale_scoreboard.ipynb`)
+## Notebook 0's set, notebook by notebook
+
+*Filled in as the notebooks run on notebook 0's set, from 2026-11-21: notebooks 1–9 so far.
+Every number in this section compares with every other; the sections after it are on older
+sets.*
+
+Each model on the 24,286 validation patches: SSIM-Y and its gain over `models.bicubic` with the
+95% range over sources, luma PSNR, the mean gain in chroma PSNR (U and V) over bicubic, the
+SSIM-Y gain on screens, and multiply-adds an LR pixel. A PSNR stops at 60 dB, libvmaf's 8-bit
+ceiling (`metrics.PSNR_CEILING`).
+
+| nb | model | SSIM-Y | over bicubic | 95% range | luma dB | chroma dB | screens | MACs / LR px |
+|---|---|---|---|---|---|---|---|---|
+| 8 | **luma 24 + 2 blocks, told the bitrate and line** | **0.8905** | **+0.0384** | +0.0361 to +0.0408 | **30.09** | +0.04 | **+0.0570** | 13,932 |
+| 4, 7 | luma 24 + 2 blocks (`upscale_luma`) | 0.8886 | +0.0365 | +0.0342 to +0.0389 | 30.00 | +0.04 | +0.0555 | 13,932 |
+| 2 | plain CNN 64-32 | 0.8872 | +0.0351 | +0.0328 to +0.0375 | 29.81 | −3.05 | +0.0540 | 26,688 |
+| 2 | plain CNN 16-24-24-32 | 0.8867 | +0.0346 | +0.0323 to +0.0369 | 29.72 | −3.66 | +0.0535 | 13,296 |
+| 6 | reparam 32-16 | 0.8827 | +0.0307 | +0.0286 to +0.0328 | 29.64 | −2.35 | +0.0480 | 9,636 |
+| 3 | residual 32-16, seed 2 (kept, `upscale_web`) | 0.8826 | +0.0306 | +0.0284 to +0.0328 | 29.54 | −2.70 | +0.0484 | 9,636 |
+| 4 | luma 32-16 | 0.8822 | +0.0301 | +0.0280 to +0.0322 | 29.61 | +0.03 | +0.0476 | 8,484 |
+| 3 | residual 32-16, seed 1 | 0.8804 | +0.0283 | +0.0262 to +0.0303 | 29.57 | −2.55 | +0.0454 | 9,636 |
+| 9 | DCT decide 32 | 0.8677 | +0.0156 | +0.0146 to +0.0165 | 28.95 | +0.01 | +0.0219 | 2,827 |
+| 9 | DCT decide 8 (3 seeds) | 0.8630–0.8635 | +0.0109 to +0.0114 | | 28.82–28.86 | +0.01 | +0.0167 to +0.0176 | 2,386 |
+| 9 | DCT fixed | 0.8540 | +0.0019 | +0.0017 to +0.0022 | 28.74 | +0.01 | +0.0035 | 2,239 |
+| 1 | Lanczos-3, PIL | 0.8528 | +0.0007 | +0.0006 to +0.0009 | 28.70 | +0.00 | +0.0013 | |
+| 3 | residual 32-16, seed 0 (stalled) | 0.8523 | +0.0002 | +0.0001 to +0.0003 | 28.58 | −0.05 | +0.0001 | 9,636 |
+| 1 | **bicubic** | 0.8521 | | | 28.58 | | | |
+| 1 | bicubic, PIL (a = −0.5) | 0.8513 | −0.0008 | −0.0010 to −0.0006 | 28.50 | +0.01 | −0.0017 | |
+| 1 | bilinear | 0.8434 | −0.0087 | −0.0096 to −0.0078 | 27.97 | +0.01 | −0.0140 | |
+| 1 | nearest | 0.8362 | −0.0159 | −0.0166 to −0.0151 | 27.47 | −0.13 | −0.0126 | |
+
+- **Every CNN that learned gains +0.028 to +0.038 SSIM-Y over bicubic**, most on screens
+  (+0.045 to +0.057) and least on video and photos (+0.013 to +0.024). No static filter is
+  more than 0.001 above bicubic.
+- **Residual blocks on luma lead**: luma 24 + 2 blocks is +0.0070 over the 32-16 control (the
+  mean of its two runs that learned, 0.0023 apart), above notebook 2's 64-32 at half its
+  multiply-adds.
+- **Luma only costs nothing**: luma 32-16 lands within luck of the RGB 32-16, with 12% fewer
+  multiply-adds and bicubic's colour. The RGB models lose 2.4–3.7 dB of chroma PSNR against
+  bicubic; over half of that is on the 2,816 gray patches, where bicubic's colour is exact
+  and the model adds a faint tint, and pooled over the split it is 0.15–0.5 dB.
+- **One seed in three of the residual 32-16 stalls at bicubic** at the shared 1e-3: 11 of its
+  narrow layer's 16 ReLUs never fire. Notebook 3 trains three seeds and keeps the best on the
+  select split; notebook 4 leaves a stalled run out of its ruler for luck.
+- **Telling the model its stream pays**: told the bitrate and the encoder line, luma 24 + 2
+  blocks gains +0.0020 SSIM-Y over its blind runs (three seeds, 0.0002 apart), most where a
+  stream is unusual (+0.004 below slice QP 18 and above 42, +0.0005 from 26 to 34). For one
+  stream the condition bakes into the biases: the same graph, the same cost.
+- **A DCT model that only decides gains** (notebook 9) is cheap and weak: the best fixed gains
+  are +0.0019 over bicubic, gains decided block by block +0.011 (3,080 weights) to +0.0156
+  (12,320), a fifth of notebook 7's multiply-adds for 0.021 less SSIM-Y. A CNN buys more for
+  each multiply-add it adds.
+- **Reparameterization is luck** (0.8827 against the control's 0.8804–0.8826), and free at run
+  time: it merges into notebook 3's graph.
+- **Speed is not measured yet on this set.** The notebooks' CPU timings were taken while
+  trainings ran; notebook 5 runs last on a quiet machine, then the browser benchmark.
+
+## Every published model on notebook 28's set (the first `29_upscale_scoreboard.ipynb`)
 
 *Measured before every trained graph was deleted from `dist/upscale/` on 2026-11-20: the table is
 the record of those graphs. Notebook 29 now scores notebook 1's filters until new graphs are
