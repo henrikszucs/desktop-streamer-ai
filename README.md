@@ -84,13 +84,14 @@ manifest: the server builds the dropdown out of the graphs in that folder on eve
 so dropping a file in or deleting one is the whole operation, no restart and no re-export of
 anything else. Run whichever notebooks you want on the page:
 
-- `src/upscale/00_data_preprocess.ipynb` — builds the patch dataset into `datasets/upscale/`,
-  and has to run first, after `uv run datasets/screens.py` has drawn the desktop screens it
-  mixes in with the photos and video. With no dataset downloaded and nothing in
-  `datasets/raw/captures/` it trains on synthesised desktop-like frames, so it works before
-  any real data exists. It is not a model and exports nothing.
-- `src/upscale/01_upscale_dummy.ipynb` — the static baseline: the three filters ONNX can express
-  as a `Resize` node, nearest, bilinear and bicubic. The bar a learned model must beat.
+- `src/upscale/00_data_preprocess.ipynb` — builds the one dataset every upscale notebook trains
+  on and is scored on into `datasets/upscale/`: YouTube sequences, the desktop screens
+  `uv run datasets/screens.py` draws (two sets) and photos, streamed through the host's x264 and
+  NVENC lines at six bitrates, cut into labelled patches, split into train, select (to choose
+  best epochs) and val (only scored). It has to run first, and exports nothing.
+- `src/upscale/01_upscale_dummy.ipynb` — the static baseline, scored as every model is:
+  nearest, bilinear, bicubic and Lanczos-3; exports the three ONNX can express as a `Resize`
+  node. Bicubic is the bar a learned model must beat.
 - `src/upscale/02_upscale_nn.ipynb` — a plain CNN that makes the whole picture itself, with
   no bicubic shortcut.
 - `src/upscale/03_upscale_web.ipynb` — the same model shaped for the browser, published at three
@@ -258,7 +259,7 @@ desktop-streamer-ai/
 │   │   ├── screens/            what screens.py draws, train/ and test/, and screens.json
 │   │   ├── screens-s1/         a second set from other seeds: screens.py --seed 1 --name screens-s1 --train 600 --test 120
 │   │   └── captures/           screenshots of your own
-│   ├── upscale/                00_data_preprocess.ipynb's patch pairs, manifest.json, synthetic/
+│   ├── upscale/                00_data_preprocess.ipynb's patches, manifest.json, targets.csv; scores/, each model's validation scores
 │   ├── frame_gen_extra/        its 00_data_preprocess.ipynb's frame runs, recorded and drawn, manifest.json,
 │   │                           synthetic/; notebook 10's whole tiles; _synthetic_v1/, the first set
 │   └── frame_gen_intra/        frame_gen_extra's runs, recorded and drawn, written by its own 00_data_preprocess.ipynb;
@@ -297,7 +298,7 @@ desktop-streamer-ai/
 │   │                                 budget.py, recursive.py, masked.py, decide.py, webexport.py
 │   └── upscale/
 │       ├── summary.md                the models, the numbers, and what they do not say
-│       ├── 00_data_preprocess.ipynb  frames → LR/HR patch clips, a halo around the LR side
+│       ├── 00_data_preprocess.ipynb  the one dataset: sources streamed through x264 and NVENC, labelled patches, train/select/val
 │       ├── 01_upscale_dummy.ipynb    static resampling filters, the bar to beat
 │       ├── 02_upscale_nn.ipynb       a first PyTorch model: a plain CNN, no bicubic shortcut
 │       ├── 03_upscale_web.ipynb      the same model, shaped for the browser

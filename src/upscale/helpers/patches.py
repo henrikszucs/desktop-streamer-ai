@@ -13,9 +13,13 @@ The models upscale one frame at a time, so one sample = one frame of a patch: a 
 frame while training, a fixed one for validation (so scores are repeatable).
 """
 
+from pathlib import Path
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+
+from . import degrade
 
 
 def trim(images, pixels, channels_last=False):
@@ -62,9 +66,10 @@ class PatchPairs(Dataset):
     With a `condition` - a function of a source's manifest entry that returns a 1-D array,
     such as `degrade.condition` of its degradation - a sample is ((LR, condition), HR)
     instead, the condition shaped (K, 1, 1) so a batch of them broadcasts over a picture.
+    With `told` - parts of `CONDITION_PARTS` - the condition is each patch's own (`conditions`).
     """
 
-    def __init__(self, directory, split, manifest, augment, halo=None, condition=None):
+    def __init__(self, directory, split, manifest, augment, halo=None, condition=None, told=None):
         self.split = split
         self.sources = manifest["splits"][split]["sources"]  # each source's file, motion and degradation
         self.lr, self.hr = _arrays(directory, split, manifest)
@@ -72,7 +77,10 @@ class PatchPairs(Dataset):
         self.halo = manifest["halo"] - self.cut
         self.augment = augment
         self.conditions = None
-        if condition is not None:
+        if told:
+            columns = [i for part in told for i in CONDITION_PARTS[part]]
+            self.conditions = torch.from_numpy(conditions(directory, split, manifest)[:, columns])[:, :, None, None]
+        elif condition is not None:
             # one row per patch: its source's condition
             rows = np.zeros((len(self.lr), len(condition(self.sources[0]))), np.float32)
             for source in self.sources:
@@ -103,3 +111,22 @@ class PatchPairs(Dataset):
 
 def _to_tensor(image):
     return torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1))).float().div_(255.0)
+
+
+# What a told model can be given about a patch, and where each part sits in `conditions`' columns: the slice QP / 51,
+# the loop filter, an I frame (what a client reads off each frame), and the stream's bitrate as
+# `degrade.condition` puts it (log2 of the bits per pixel against the host's default, and a 1 for no codec).
+CONDITION_PARTS = {"qp": [0], "deblocked": [1], "intra": [2], "bpp": [3, 4]}
+QP_MAX = 51
+
+
+def conditions(directory, split, manifest):
+    """Every patch's condition, (N, 5) float32 in `CONDITION_PARTS`' order, from the labels `00_data_preprocess.ipynb`
+    writes beside the patches."""
+    files = manifest["splits"][split]
+    qp, deblocked, intra = (np.load(Path(directory) / files[name]) for name in ("qp", "deblocked", "intra"))
+    bpp = np.zeros((len(qp), 2), np.float32)
+    for source in files["sources"]:
+        first, end = source["patches"]
+        bpp[first:end] = degrade.condition(source["degradation"], ("bpp",))
+    return np.concatenate([np.stack([qp / QP_MAX, deblocked, intra], axis=1), bpp], axis=1).astype(np.float32)

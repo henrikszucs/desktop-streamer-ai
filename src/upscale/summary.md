@@ -71,32 +71,20 @@ published.
 
 Run in order, from this folder:
 
-- `00_data_preprocess.ipynb` — source frames from the downloaded datasets (DIV2K, Flickr2K,
-  YouTube sequences, read by `helpers/sources.py`), the desktop screens `datasets/screens.py`
-  draws (400 train, 80 validation: code, documents, terminals, spreadsheets, chat, file
-  explorers and settings in real fonts, light and dark, 100–200% display scale, some in
-  ClearType; a third of the patches now) and `datasets/raw/captures/` (synthesised
-  desktop-like frames when all of that is empty), every one made a clip: a YouTube
-  sequence as it is, an image as a second of a 1280×720 window sliding, holding still or
-  (a tenth of them) zooming over it (`helpers/motion.py`) → the stream's own ×2 degradation from `helpers/degrade.py` on the
-  whole frame: downscale, 4:2:0, H.264 at a random constant 0.2–1.0 bpp with x264's loop filter
-  on for half of them, no codec for a tenth, decode, drawn per source → patches at random
-  even places, each held still for 8 frames, a 72 px LR input (64 px core + a halo of 4)
-  over a 128 px HR target, flat ones dropped by luma variance and ones the codec destroyed
-  dropped by `MIN_LR_PSNR` (LR core under 24 dB luma PSNR against a clean downscale; 3% of
-  the busy spots at 0.2–1.0 bpp), split by *source* (an image, or a whole video)
-  rather than by patch → four `uint8` `.npy` arrays of
-  `(patches, frames, h, w, 3)` and a `manifest.json` in `datasets/upscale/` that records
-  each source's motion and degradation. `helpers/patches.py` reads it back for the model notebooks,
-  one frame a sample, and they trim the halo off the output before the loss and every
-  score. The results below were measured on the earlier clean bicubic pairs of 64 px
-  patches without a halo, so none of them carries over: on a 40-source test set, the
-  32-16 model trained 100 epochs gains +1.0 dB over bicubic without the codec and +0.16 dB
-  with it.
-- `01_upscale_dummy.ipynb` — **static methods only.** Seven of them: nearest, box, bilinear,
-  hamming, bicubic, Lanczos, and bicubic followed by an unsharp mask. No training; it
-  measures quality and runtime, hands out the bar, and exports the three ONNX can express
-  as `Resize` so the bar exists in the browser too.
+- `00_data_preprocess.ipynb` — **the one dataset every notebook trains on and is scored on**
+  (rebuilt 2026-11-21 on notebook 28's recipe, which it replaces): 1,396 clean, detailed
+  YouTube sequences (up to three a video), 1,200 drawn screens of two sets and 460 DIV2K and
+  Flickr2K photos, each a clip through the host's two lines (x264 and NVENC) at six bitrates;
+  one frame of each slice QP bin and one I frame a source and line, 4 patches of each (72 px
+  LR with a halo of 4 over 128 px HR), labelled with the slice QP, loop filter, frame type,
+  line and kind. Three splits by source: **train** 140,795 patches, **select** 6,982 (held-out
+  training sources, to choose best epochs) and **val** 24,286, only ever scored. Bicubic reads
+  0.8521 SSIM-Y on val. Writes `datasets/upscale/`.
+- `01_upscale_dummy.ipynb` — **the static filters, scored as every model is**
+  (`training.val_scores` on the val split, recorded for notebook 29's table): bicubic 0.8521,
+  Lanczos-3 +0.0007, PIL's bicubic −0.0008, bilinear −0.0087, nearest −0.0159 SSIM-Y.
+  Exports nearest, bilinear and bicubic at the client's 320×180 step and as a whole frame.
+  See "Static methods".
 - `02_upscale_nn.ipynb` — **the PyTorch attempt.** Trains `PlainCNN`, an ESPCN-shaped
   network with no bicubic shortcut that makes the whole picture itself, on the patch
   pairs, measures it the same way, writes `checkpoints/upscale_nn.pt`, and exports it.
@@ -353,7 +341,10 @@ package everywhere, so every `cpu_ms` written into a graph is a CPU number; GPU 
 graph are the browser's ("The browser benchmark"). Runtimes are forward pass only — no
 decode, no copy, no PNG encoding.
 
-## How much the stream costs the LR (`00_data_preprocess.ipynb`)
+## How much the stream costs the LR (the first `00_data_preprocess.ipynb`)
+
+*Measured on notebook 0's first set, before it was rebuilt on 2026-11-21; the notebook no longer
+makes this measurement.*
 
 Every stored LR patch against the *ideal* downscale of its HR target — the same filter, in
 RGB, no 4:2:0 and no codec — on the inner 56×56 of its core (RGB PSNR). Rebuilding a
@@ -399,7 +390,26 @@ with 4% under 30. Every result further down was trained on an older set.
 
 ## Static methods (`01_upscale_dummy.ipynb`, `25_upscale_static.ipynb`)
 
-### Quality, scored as the models are — notebook 25
+### Quality on the one set — notebook 1
+
+On notebook 0's 24,286 validation patches through `training.val_scores`, as every model is
+scored; the gain's range is a 95% bootstrap over the sources:
+
+| Filter | SSIM-Y | over bicubic | luma dB | video | screens | photos |
+| --- | --- | --- | --- | --- | --- | --- |
+| Lanczos-3 (PIL, float) | 0.8528 | +0.0007 (+0.0006 to +0.0009) | 28.70 | −0.0000 | +0.0013 | +0.0007 |
+| **bicubic** (`models.bicubic`, a = −0.75) | **0.8521** | | **28.58** | | | |
+| bicubic, PIL (a = −0.5) | 0.8513 | −0.0008 | 28.50 | +0.0005 | −0.0017 | −0.0013 |
+| bilinear | 0.8434 | −0.0087 | 27.97 | −0.0018 | −0.0140 | −0.0102 |
+| nearest | 0.8362 | −0.0159 | 27.47 | −0.0162 | −0.0126 | −0.0248 |
+
+- **Lanczos-3 is the best filter by +0.0007**, on clean frames (+0.0023 at QP 0–18), and below
+  bicubic from QP 38 up, where its sharper kernel brings out the codec's blocks. ONNX cannot
+  express it; bicubic stays the bar.
+- **Softer filters gain where the codec damaged most**: bilinear is +0.0017 at QP 46–52 and
+  −0.0175 at 0–18. A blur hides blocks.
+
+### Quality, scored as the models are — notebook 25 (notebook 21's set)
 
 Notebook 25 scores the filters on notebook 21's 9,628 validation patches through
 `training.evaluate`, the patches and code of notebooks 22–24. Bicubic is `models.bicubic`
@@ -426,10 +436,10 @@ Notebook 25 scores the filters on notebook 21's 9,628 validation patches through
 
 Notebook 21's targets are video only; screens and photos are not in it.
 
-### Quality — notebook 1, 76 validation patches, 64px → 128px
+### Quality — notebook 1's first run, 76 validation patches, 64px → 128px
 
-The table below is notebook 1's first run, in RGB PSNR, on the earlier clean bicubic pairs.
-Notebook 25's table above supersedes it.
+The table below is notebook 1's first run, in RGB PSNR, on the earlier clean bicubic pairs;
+the runtimes after it are from that run too. The notebook no longer measures either.
 
 | Method | PSNR | vs nearest |
 | --- | --- | --- |
