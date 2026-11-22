@@ -7,10 +7,10 @@ be sent fewer pixels than it displays.
 > (`reference_60fps.md`): 13.3 ms a frame in the client on that card, which leaves the graph
 > 9.2 ms on the benchmark page at the stream's tile count. That is 0.58 ms a tile for a
 > 1280×720 stream. The told model (notebook 23, float16) meets it only for a 640×360 stream.
-> Notebook 24's told `q24` (`client/upscale_fast.onnx`) is built for the 1280×720 stream:
-> **7.6 ms predicted** (7.8 conservative) at 16 tiles. That figure is predicted from the RTX 3090
-> and has not been measured on the card. On notebook 0's set it keeps 60% of the told model's
-> SSIM-Y gain (notebook 24), with bicubic's colour.
+> Notebook 24's told `q24`, as notebook 27 trains it (`client/upscale_fast.onnx`), is built for
+> the 1280×720 stream: **7.6 ms predicted** (7.8 conservative) at 16 tiles. That figure is
+> predicted from the RTX 3090 and has not been measured on the card. On notebook 0's set it
+> keeps 57% of the told model's SSIM-Y gain, with bicubic's colour and a flat picture kept flat.
 
 > **2026-11-22: every notebook has run again on notebook 0's set**, one recipe, scored on one
 > validation split, and their graphs are back in `dist/upscale/` (every trained graph was
@@ -34,21 +34,25 @@ be sent fewer pixels than it displays.
 > +0.006 over the same body blind at slice QP 0–18 and 46–52, +0.0015 at 30–34 (notebook 29).
 >
 > **On screens compute buys what bits cannot** (notebook 15). Raising H.264 from the host's
-> default 0.46 to 3.3 bits per LR pixel adds +0.0136 SSIM-Y on screens; the told 24×2 adds
+> default 0.46 to 3.3 bits per LR pixel adds +0.0135 SSIM-Y on screens; the told 24×2 adds
 > +0.040 at the same bits, a quality no bitrate reaches on 7 of the 8 screen clips. On photos
 > and video it adds the most of any client at every bitrate (+0.0163 and +0.0137 at the
 > default) and stays above plain H.264, where most blind models fall below it on photos from
 > 0.7 bits up.
 >
-> **The 60 fps tier is notebook 24's told q24** (the box above): 60% of the told model's gain
-> at 1,824 multiply-adds an LR pixel. At the same bits it adds the most quality for its
-> compute on photos and video, and half of the told model's gain on screens.
+> **The 60 fps tier is notebook 24's told q24, as notebook 27 trains it** (the box above): the
+> SSIM loss plus a tenth of the JND loss. On the SSIM loss alone the q24 lifts a bright flat
+> picture by up to 2.3/255, past the 1/255 desktop-streamer's enhancer test allows; this one
+> stays within 0.66/255 there, for 0.0010 SSIM-Y. It keeps 57% of the told model's gain at
+> 1,824 multiply-adds an LR pixel. At the same bits it adds the most quality for its compute on
+> photos and video, and half of the told model's gain on screens.
 >
-> **The SSIM loss stays.** Trained on the JND loss, both bodies lose on every judge, but for
-> the q24 on the MOS predicted from the loss it trained on (notebook 26). Added to the SSIM
-> loss at λ = 0.1 it gains a little luma (+0.13 to +0.17 dB) and nothing beyond seed luck on
-> SSIM-Y or LPIPS; at 0.3 and 1 it costs SSIM-Y (notebook 27). The q24 on mix 1 that an older
-> set favoured is not exported.
+> **The SSIM loss stays for the told 24×2.** Trained on the JND loss, both bodies lose on
+> every judge, but for the q24 on the MOS predicted from the loss it trained on (notebook 26).
+> Added to the SSIM loss at λ = 0.1 it gains a little luma (+0.13 to +0.17 dB) and nothing
+> beyond seed luck on SSIM-Y or LPIPS; at 0.3 and 1 it costs SSIM-Y (notebook 27). What it
+> buys the fast q24 is a flat picture that stays flat, which is why the client's fast graph has
+> it.
 >
 > **A look-up table is as good on screens and still does not run fast.** Notebook 10's
 > two-stage `SDY x2` table matches the told 24×2 on screens at the same bits, falls below
@@ -152,15 +156,17 @@ Run in order, from this folder:
 - `24_upscale_fast.ipynb` — **a told model for 60 fps at a 1280×720 stream on a GTX 1660
   Ti**, as a drop-in for notebook 23's graph. It measures every layer of the 1660 Ti's cost
   table again on the RTX 3090 to predict that card from this one, trains bodies that run at a
-  quarter of the pixels, chooses one on the select split, and exports `client/upscale_fast.onnx`
-  and its float16 twin. See "60 fps on a GTX 1660 Ti".
+  quarter of the pixels, chooses one on the select split, and checks its client-shaped graphs
+  (kept in `checkpoints/fast_client/`); notebook 27 exports the client's fast graph. See "60 fps
+  on a GTX 1660 Ti".
 - `26_upscale_jnd_loss.ipynb` — **the JND loss against the SSIM loss** on the two best bodies,
   notebook 22's told 24×2 and notebook 24's q24: the perceptual repo's differentiable JND metric
   as the loss (`helpers/jnd_settings.json`), judged by SSIM-Y, PSNR, JND, LPIPS, GMSD and
   pictures of patches and whole frames. Exports nothing.
 - `27_upscale_mixed_loss.ipynb` — **the SSIM loss and the JND loss together**: the SSIM loss +
   λ × notebook 26's JND loss at λ = 0.1, 0.3 and 1, on the same two bodies and seeds, against
-  both losses alone. Exports nothing.
+  both losses alone. Exports the client's fast graph, `client/upscale_fast.onnx`: the q24 run
+  that keeps a flat picture flat.
 - `29_upscale_scoreboard.ipynb` — **every model on one set**: every notebook's recorded
   validation scores in one table against notebook 1's bicubic, by kind, line and slice QP.
 
@@ -221,8 +227,8 @@ ceiling (`metrics.PSNR_CEILING`).
 | 18 | specialist: blind, trained on slice QP 38 and up only | 0.8765 | +0.0244 | +0.0220 to +0.0267 | 28.64 | +0.03 | +0.0410 | 13,932 |
 | 24 | q24, the exact 6×6 skip | 0.8762 | +0.0241 | +0.0228 to +0.0254 | 29.32 | +0.02 | +0.0328 | 1,824 |
 | 12 | DirNet adaptive: a blend chosen per pixel | 0.8758 | +0.0237 | +0.0221 to +0.0255 | 29.21 | +0.01 | +0.0382 | 4,343 |
-| 24 | **q24, the 4×4 skip frozen (published, `upscale_fast`; 2 seeds' mean)** | 0.8758 | +0.0237 | +0.0225 to +0.0249 | 29.29 | +0.02 | +0.0322 | 1,824 |
-| 27 | fast q24, mix 0.1 (2 seeds) | 0.8749–0.8758 | +0.0228 to +0.0237 | | 29.37–29.47 | +0.02 | +0.0313 to +0.0324 | 1,824 |
+| 24 | q24, the 4×4 skip frozen (2 seeds' mean) | 0.8758 | +0.0237 | +0.0225 to +0.0249 | 29.29 | +0.02 | +0.0322 | 1,824 |
+| 27 | **fast q24, mix 0.1 (2 seeds; seed 0 published as `upscale_fast`)** | 0.8749–0.8758 | +0.0228 to +0.0237 | | 29.37–29.47 | +0.02 | +0.0313 to +0.0324 | 1,824 |
 | 10 | LUT S: one table, fine-tuned | 0.8754 | +0.0233 | +0.0213 to +0.0254 | 29.31 | +0.02 | +0.0406 | look-up |
 | 24 | q24, its skip trained (2 seeds' mean) | 0.8751 | +0.0230 | +0.0219 to +0.0242 | 29.26 | −1.00 | +0.0306 | 1,824 |
 | 26 | told 24×2, trained on the JND loss (2 seeds) | 0.8749–0.8750 | +0.0228 to +0.0229 | | 29.75–29.77 | +0.02 | +0.0322 to +0.0327 | 13,932 |
@@ -293,18 +299,20 @@ ceiling (`metrics.PSNR_CEILING`).
   24). q24 works at a quarter of the pixels with a frozen 4×4 bicubic skip, is predicted at 7.6 ms
   (7.8 conservative) at 16 tiles against the 8.3 ms bar, and gains +0.0237 over bicubic against
   notebook 22's +0.0396: 71% of it on video, 56% on screens. Its skip has to stay frozen: trained,
-  it gives up 1 dB of U and V for no SSIM-Y. It is a drop-in for the client's graph
-  (`dist/upscale/client/upscale_fast.onnx`), not yet timed on the card itself.
+  it gives up 1 dB of U and V for no SSIM-Y. Its graph passes every drop-in check but lifts a
+  bright flat picture by up to 2.3/255, so the client runs notebook 27's training of it; neither
+  is timed on the card itself.
 - **On screens compute buys what bits cannot; on photos a blind model loses to the bits** (notebook
   15, 8 clips of each kind streamed at 0.1 to 3.3 bits per LR pixel). On screens, x264 at 3.3 bits
-  adds only +0.0136 SSIM-Y over the host's default (0.46), while the told 24x2, the luma 24x2 and
+  adds only +0.0135 SSIM-Y over the host's default (0.46), while the told 24x2, the luma 24x2 and
   the `SDY x2` table each add +0.040 to +0.041 at the same bits, a quality no bitrate reaches on 7
   of the 8 clips. The told 24x2 adds the most on photos and video at every bitrate (+0.0163 and
-  +0.0137 at the default, worth 1.29 and 1.56 times the bits). On photos at a target of 1.0 the
+  +0.0137 at the default, worth 1.30 and 1.53 times the bits). On photos at a target of 1.0 the
   blind DirNet C and D, the leaky 32-16 and the table score below the traditional stream with the
-  same bits; both told models stay above it. The told fast q24 adds the most for its 5,244
-  operations off screens (level with the luma 24x2 on photos at a fifth of the work), and half of
-  the told 24x2's gain on screens.
+  same bits; both told models stay above it. The told fast q24 (notebook 27's) adds the most for
+  its 5,244 operations off screens (0.0009 under the luma 24x2 on photos at a fifth of the work,
+  and above the traditional stream's luma PSNR on photos at every bitrate), and half of the told
+  24x2's gain on screens.
 - **Both bodies stay on the SSIM loss** (notebook 26, the JND loss at the 2026-11-19 settings).
   Trained on the JND loss, the told 24×2 loses on every judge, its own JND included (LPIPS 0.1599
   against 0.1515; closer on 30% of the patches); the fast q24 on every judge but the predicted MOS
@@ -321,8 +329,12 @@ ceiling (`metrics.PSNR_CEILING`).
   and it centres the brightness; for the fast q24 it is +0.13 dB and 0.0007 better on LPIPS,
   inside its seeds, and takes part of the grid away (1.23 against 1.29; 1.13 in the truth).
   λ = 0.3 and 1 cost 0.0016 to 0.0046 SSIM-Y, and λ = 1 LPIPS too. No mix beats the SSIM loss by
-  more than its seeds land apart on SSIM-Y or LPIPS; nothing is exported. On notebook 21's set
-  mix 1 had been the q24's best; at these JND settings, on this set, it is its worst mix.
+  more than its seeds land apart on SSIM-Y or LPIPS. On notebook 21's set mix 1 had been the
+  q24's best; at these JND settings, on this set, it is its worst mix. But mix 0.1 at seed 0 keeps
+  a flat picture flat: over 41 levels and every condition the client can send, 8 of 8,528 pairs
+  move 1/255 or more, against 2,576 for notebook 24's q24. Of the runs within 0.001 of the best
+  select SSIM-Y it drifts least, so notebook 27 exports it as the client's fast graph, at 0.0010
+  SSIM-Y below notebook 24's (+0.0228 over bicubic).
 - **The scoreboard** (notebook 29, 78 models from 17 notebooks): every run of the 24 + 2-block
   body told its stream is above every blind model (+0.0375 to +0.0405 against +0.0362 to
   +0.0365), except mix 1 and the JND-loss runs. The six best rows (notebooks 20, 27 and 22, two
@@ -1920,12 +1932,12 @@ at the host's default 0.46 bits per LR pixel (notebook 15, 8 whole clips of each
 | | SSIM-Y | over bicubic | multiply-adds / LR px | screens | photos | video | in `dist/upscale/` |
 |---|---|---|---|---|---|---|---|
 | bicubic (the GPU's sampler) | 0.8521 | | 0 | | | | nothing to run |
-| **told 24×2 (notebooks 22, 23)** | **0.8919** | **+0.0398** | 13,932 | +0.0397 | **+0.0163** | **+0.0137** | `client/upscale.onnx`: what desktop-streamer runs |
-| **told q24, its skip frozen (24)** | 0.8759 | +0.0238 | 1,824 | +0.0194 | +0.0079 | +0.0080 | `client/upscale_fast.onnx`: the 60 fps tier |
-| luma 24 + 2 blocks, blind (7) | 0.8886 | +0.0365 | 13,932 | +0.0400 | +0.0081 | +0.0110 | `upscale_luma` |
-| `SDY x2` table, fine-tuned (10) | 0.8858 | +0.0337 | look-up, 2.5 MB | **+0.0413** | +0.0028 | +0.0101 | `upscale_lut_sdy_x2_17`: slow in a browser |
-| luma 32-16, leaky ReLU (16) | 0.8828 | +0.0307 | 8,484 | +0.0350 | +0.0039 | +0.0091 | `upscale_luma_32-16_leaky` |
-| DirNet full (12) | 0.8811 | +0.0290 | 5,687 | +0.0353 | +0.0023 | +0.0087 | `upscale_dirnet_full`: float32 only |
+| **told 24×2 (notebooks 22, 23)** | **0.8919** | **+0.0398** | 13,932 | +0.0395 | **+0.0163** | **+0.0137** | `client/upscale.onnx`: what desktop-streamer runs |
+| **told q24, SSIM + 0.1 × JND (24, 27)** | 0.8749 | +0.0228 | 1,824 | +0.0188 | +0.0072 | +0.0087 | `client/upscale_fast.onnx`: the 60 fps tier |
+| luma 24 + 2 blocks, blind (7) | 0.8886 | +0.0365 | 13,932 | +0.0398 | +0.0081 | +0.0111 | `upscale_luma` |
+| `SDY x2` table, fine-tuned (10) | 0.8858 | +0.0337 | look-up, 2.5 MB | **+0.0411** | +0.0028 | +0.0101 | `upscale_lut_sdy_x2_17`: slow in a browser |
+| luma 32-16, leaky ReLU (16) | 0.8828 | +0.0307 | 8,484 | +0.0348 | +0.0038 | +0.0092 | `upscale_luma_32-16_leaky` |
+| DirNet full (12) | 0.8811 | +0.0290 | 5,687 | +0.0351 | +0.0022 | +0.0088 | `upscale_dirnet_full`: float32 only |
 
 **The told 24×2 stays.** On patches it is 0.0008 under the best rows (notebook 20's switched
 pair), at the same bits it adds the most of any client on photos and video and within 0.0016 of
@@ -1933,14 +1945,16 @@ the most on screens, and it stays above plain H.264 at every bitrate measured. T
 of its shape ran a 1280×720 stream's 16 tiles in 6.9 ms on the RTX 3090 and in 34.6 ms on the
 GTX 1660 Ti: too slow there at that stream size.
 
-**Where it cannot run, the told q24**, predicted at 7.6 ms on the GTX 1660 Ti: 60% of the gain,
-bicubic's colour, and the most quality for its compute off screens. The blind leaky 32-16 and
+**Where it cannot run, the told q24 as notebook 27 trains it**, predicted at 7.6 ms on the GTX
+1660 Ti: 57% of the gain, bicubic's colour, a flat picture kept flat, and the most quality for
+its compute off screens. The blind leaky 32-16 and
 DirNet full gain more on screens at three to five times its multiply-adds, and less on photos
 and video.
 
 **No table and no new loss.** The `SDY x2` table matches the told model on screens but trails
 on photos and video and runs outside the browser's fast set; the JND loss and its mixes win
-nothing worth a change (notebooks 26, 27). Two told models switched at QP 30 (notebook 20) are
+nothing worth a change on the scores (notebooks 26, 27), and a tenth of it is in the fast graph
+only because it keeps a flat picture flat. Two told models switched at QP 30 (notebook 20) are
 +0.0008 over notebook 22's one at both seeds, for a second graph and a jump in the picture
 where a stream's QP crosses 30.
 
