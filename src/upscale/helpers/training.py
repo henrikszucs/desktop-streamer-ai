@@ -330,14 +330,18 @@ def copy_weights(model):
 
 
 def train_one_epoch(model, loader, trim, loss_fn, optimiser, show_progress=False, teacher=None):
-    """One pass over every training patch. Returns the average loss.
+    """One pass over every training patch. Returns the average loss and how many batches were skipped.
+
+    A batch whose loss or gradient is not finite (a rare batch can overflow the JND loss) is skipped: no
+    step is taken, so it cannot turn the weights into NaN. A run that never meets one trains as before.
 
     With `show_progress`, a Keras-style progress bar is redrawn in place while it runs. With a
     `teacher` (a model that is not trained), the loss is `loss_fn(prediction, target, taught)`,
     where `taught` is the teacher's picture of the same batch.
     """
     model.train()
-    total_loss, seen = 0.0, 0
+    parameters = [p for p in model.parameters() if p.requires_grad]
+    total_loss, seen, skipped = 0.0, 0, 0
     started = shown = time.time()
     for step, (lr_batch, hr_batch) in enumerate(loader, start=1):
         lr_batch, hr_batch = to_device(lr_batch), hr_batch.to(DEVICE)
@@ -350,16 +354,20 @@ def train_one_epoch(model, loader, trim, loss_fn, optimiser, show_progress=False
             loss = loss_fn(prediction, hr_batch, taught)
         optimiser.zero_grad(set_to_none=True)
         loss.backward()
+        grads = [p.grad for p in parameters if p.grad is not None]
+        if not (math.isfinite(loss.item()) and torch.isfinite(torch.nn.utils.get_total_norm(grads))):
+            skipped += 1
+            continue
         optimiser.step()
         total_loss += loss.item() * len(hr_batch)
         seen += len(hr_batch)
 
         # redraw the bar twice a second ("\r" goes back to the start of the line)
-        if show_progress and time.time() - shown > 0.5:
+        if show_progress and time.time() - shown > 0.5 and seen:
             bar = progress_bar(step, len(loader), time.time() - started)
             print(f"\r{bar} - loss: {total_loss / seen:.4f}", end="", flush=True)
             shown = time.time()
-    return total_loss / seen
+    return (total_loss / seen if seen else math.nan), skipped
 
 
 def progress_bar(step, steps, seconds, width=30):
@@ -424,7 +432,8 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
     - **Stop when it has converged**: once the learning rate is down to `min_learning_rate`
       (`learning_rate` / 100 if not given) and `patience` more epochs bring no improvement,
       even small steps no longer help, so training stops. `max_epochs` is only a safety
-      limit. Training also stops at once if the loss becomes NaN. If no epoch ever beat the
+      limit. A batch whose loss or gradient is not finite is skipped (counted in the
+      epoch's `skipped`); training stops at once if every batch of an epoch was. If no epoch ever beat the
       untrained model, it warns: the model has learned nothing.
     - **Checkpoint**: with a `checkpoint` path, the whole training is saved there after
       every epoch. Run the same call again and it carries on where it stopped, or, if it had
@@ -482,12 +491,14 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
 
         epoch_started = time.time()
         rate = optimiser.param_groups[0]["lr"]
-        loss = train_one_epoch(model, train_loader, trim, loss_fn, optimiser, show_progress=verbose == 1,
-                               teacher=teacher)
+        loss, skipped = train_one_epoch(model, train_loader, trim, loss_fn, optimiser, show_progress=verbose == 1,
+                                        teacher=teacher)
         scores = evaluate(model, val_loader, trim, scorer)
         seconds = time.time() - epoch_started
         scores["loss"] = loss
         scores["learning_rate"] = rate
+        if skipped:
+            scores["skipped"] = skipped   # batches whose loss or gradient was not finite
         progress["history"].append(scores)
         progress["seconds"] += seconds
 
