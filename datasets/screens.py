@@ -24,10 +24,13 @@ code.
     uv run datasets/screens.py                       # 300 train, 60 test
     uv run datasets/screens.py --train 600 --test 100
     uv run datasets/screens.py --fonts "C:/Windows/Fonts"
+    uv run datasets/screens.py --seed 1 --name screens-s1   # another set beside the first
 
 Writes `screens/train/*.png`, `screens/test/*.png`, the `train.txt` / `test.txt` lists
 `download.py` writes for every dataset, and `screens.json`: how each picture was drawn.
-Every picture has its own seed, so the same arguments draw the same screens.
+Every picture has its own seed, so the same arguments draw the same screens. A run replaces
+the pictures already in its folder; `--name` writes to another folder, and with another
+`--seed` it draws screens the first set does not have.
 """
 
 import argparse
@@ -732,6 +735,7 @@ def main():
     parser.add_argument("--test", type=int, default=60, help="screens for validation")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dest", type=Path, default=ROOT / "raw", help="the raw datasets folder")
+    parser.add_argument("--name", default="screens", help="the folder in --dest the screens go to")
     parser.add_argument("--fonts", action="append", default=[], help="another folder to look for fonts in")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     args = parser.parse_args()
@@ -743,7 +747,7 @@ def main():
         print("no fonts found - drawing with Pillow's own font")
         fonts = {"sans": [(None, None)], "serif": [(None, None)], "mono": [(None, None)]}
 
-    folder = args.dest / "screens"
+    folder = args.dest / args.name
     records = []
     for split, count in (("train", args.train), ("test", args.test)):
         out = folder / split

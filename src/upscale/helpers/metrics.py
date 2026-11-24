@@ -141,12 +141,19 @@ def ssim_l1_loss(prediction, target, alpha=0.84):
     return alpha * structure + (1 - alpha) * F.l1_loss(prediction, target)
 
 
+PSNR_CEILING = 60.0   # dB: libvmaf's ceiling for 8-bit pictures (6 x 8 + 12)
+
+
 def per_image(prediction, target):
-    """Luma SSIM and luma PSNR of every image on its own, as (N,) tensors - for choosing
-    between models image by image. Their means are `report`'s "ssim" and "y"."""
+    """Luma SSIM, and the PSNR of luma and of each chroma channel, of every image on its own, as (N,) tensors - for
+    choosing between models image by image.
+
+    Each PSNR stops at `PSNR_CEILING`: a gray screen's chroma, which bicubic matches exactly, would otherwise score
+    120 dB, and an error far below one 8-bit level would cost 60 dB of a mean."""
     yuv_prediction, yuv_target = _yuv(prediction, target)
     luma_prediction, luma_target = yuv_prediction[:, :1], yuv_target[:, :1]
-    return {"ssim": _ssim(luma_prediction, luma_target), "y": _db(_mse(luma_prediction, luma_target))[:, 0]}
+    db = _db(_mse(yuv_prediction, yuv_target)).clamp_max(PSNR_CEILING)
+    return {"ssim": _ssim(luma_prediction, luma_target), "y": db[:, 0], "u": db[:, 1], "v": db[:, 2]}
 
 
 def report(prediction, target, chroma_subsample=1):

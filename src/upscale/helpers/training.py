@@ -22,9 +22,9 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler, Subset
 
-from . import metrics, patches, sources
+from . import metrics, models, patches, sources
 from .patches import PatchPairs
 
 DATA_DIR = sources.ROOT / "upscale"     # what 00_data_preprocess.ipynb writes
@@ -60,19 +60,41 @@ def describe(manifest):
           f"{manifest['halo']}) -> {manifest['patch_hr']} px HR out, {manifest['frames_per_patch']} frames each")
 
 
-def loaders(data_dir, manifest, batch_size=32, val_batch_size=None, condition=None):
-    """Training loader (shuffled, flipped and rotated) and validation loader (fixed).
+# The recipe every model notebook trains with, so two notebooks' results differ by their models alone (`fit`): Adam at
+# LEARNING_RATE with batches of BATCH_SIZE, `metrics.ssim_l1_loss`, the best epoch by SSIM-Y on the select split, and
+# an epoch of EPOCH_PATCHES patches drawn afresh from the training split each time.
+BATCH_SIZE, LEARNING_RATE, EPOCH_PATCHES = 32, 1e-3, 34_368
 
-    With a `condition` (see `PatchPairs`), every batch's input is (LR, condition), and
-    `train` and `evaluate` call the model with both."""
-    train_set = PatchPairs(data_dir, "train", manifest, augment=True, condition=condition)
-    val_set = PatchPairs(data_dir, "val", manifest, augment=False, condition=condition)
+
+def loaders(data_dir, manifest, batch_size=32, val_batch_size=None, condition=None, told=None, epoch_patches=None,
+            seed=0, qp_range=None):
+    """Training loader (shuffled, flipped and rotated) and the loader `train` chooses the best epoch on (fixed): the
+    `select` split, held-out training sources, where the set has one, so the validation split is only ever scored
+    (`val_scores`); the validation split on an older set without it.
+
+    With a `condition` or `told` (see `PatchPairs`), every batch's input is (LR, condition), and
+    `train` and `evaluate` call the model with both. With `epoch_patches`, an epoch is that many training patches,
+    drawn afresh each epoch in an order the `seed` fixes, rather than the whole split. With `qp_range` (low, high), both
+    keep only the patches whose slice QP is in [low, high): a model for part of the QP range."""
+    holdout = "select" if "select" in manifest["splits"] else "val"
+    train_set = PatchPairs(data_dir, "train", manifest, augment=True, condition=condition, told=told)
+    held_set = PatchPairs(data_dir, holdout, manifest, augment=False, condition=condition, told=told)
+    if qp_range is not None:
+        def within(split, dataset):
+            qp = np.load(Path(data_dir) / manifest["splits"][split]["qp"])
+            return Subset(dataset, np.flatnonzero((qp >= qp_range[0]) & (qp < qp_range[1])))
+        train_set, held_set = within("train", train_set), within(holdout, held_set)
     # num_workers stays 0: the arrays are memory mapped, and worker processes would copy them
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=True)
-    val_loader = DataLoader(val_set, batch_size=val_batch_size or batch_size, shuffle=False)
-    print(f"train {len(train_set):6} patches from {len(train_set.sources)} sources")
-    print(f"val   {len(val_set):6} patches from {len(val_set.sources)} sources")
-    return train_loader, val_loader
+    if epoch_patches:
+        sampler = RandomSampler(train_set, num_samples=epoch_patches, generator=torch.Generator().manual_seed(seed))
+        train_loader = DataLoader(train_set, batch_size=batch_size, sampler=sampler, drop_last=True)
+    else:
+        train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=True)
+    held_loader = DataLoader(held_set, batch_size=val_batch_size or batch_size, shuffle=False)
+    within_qp = f" at slice QP {qp_range[0]}-{qp_range[1]}" if qp_range is not None else ""
+    print(f"train  {len(train_set):6} patches{within_qp}")
+    print(f"{holdout:<7}{len(held_set):6} patches{within_qp}, to choose the best epoch")
+    return train_loader, held_loader
 
 
 def trimmer(manifest):
@@ -103,17 +125,203 @@ def forward(model, inputs):
 
 
 @torch.no_grad()
-def evaluate(model, loader, trim):
-    """Every score in `metrics.report`, averaged over a loader."""
+def evaluate(model, loader, trim, scorer=None):
+    """Every score in `metrics.report`, averaged over a loader. A `scorer(prediction, target)`
+    returning {name: batch mean} adds its own scores, e.g. a perceptual metric (notebook 26)."""
     model.eval()
     totals, count = {}, 0
     for lr, hr in loader:
         lr, hr = to_device(lr), hr.to(DEVICE)
-        scores = metrics.report(trim(forward(model, lr)), hr)
+        prediction = trim(forward(model, lr))
+        scores = metrics.report(prediction, hr)
+        if scorer is not None:
+            scores.update({key: float(value) for key, value in scorer(prediction, hr).items()})
         for key, value in scores.items():
             totals[key] = totals.get(key, 0.0) + value * len(hr)
         count += len(hr)
     return {key: value / count for key, value in totals.items()}
+
+
+def fit(model, checkpoint, manifest, data_dir=DATA_DIR, learning_rate=LEARNING_RATE, told=None, seed=0, verbose=2,
+        loss_fn=metrics.ssim_l1_loss, qp_range=None, select="ssim", **settings):
+    """Train `model` with the recipe every model notebook shares (see `BATCH_SIZE`), saving every epoch to `checkpoint`
+    and carrying on from it (`train`). `told`: the condition parts the model takes as a second input; `qp_range`: train
+    and select on part of the slice QP range only (`loaders`). A notebook that studies the loss itself passes its own
+    `loss_fn` (and a `teacher`, see `train_one_epoch`), and may choose the best epoch by its own `select` score (with
+    `scorer` and `lower_is_better`, see `train`); every other model is chosen by SSIM-Y. Returns `train`'s history and
+    best epoch; the model is left at its best epoch."""
+    torch.manual_seed(seed)
+    train_loader, select_loader = loaders(data_dir, manifest, BATCH_SIZE, 256, told=told, epoch_patches=EPOCH_PATCHES,
+                                          seed=seed, qp_range=qp_range)
+    return train(model, train_loader, select_loader, trimmer(manifest), learning_rate=learning_rate,
+                 loss_fn=loss_fn, select=select, checkpoint=checkpoint, verbose=verbose, **settings)
+
+
+def fitted_weights(checkpoint):
+    """The best epoch's weights of a training `fit` saved to `checkpoint`, for a notebook that uses another's model."""
+    progress = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    if progress["stopped"] is None:
+        raise RuntimeError(f"the training in {checkpoint} has not finished: run its notebook first")
+    return progress["best"]["state"]
+
+
+def best_run(checkpoints):
+    """Of finished trainings of one model at several seeds, the file whose best epoch scored highest on the select
+    split: the run to keep, chosen without looking at the validation split."""
+    return max(checkpoints, key=lambda path: torch.load(path, map_location="cpu", weights_only=True)["best"]["score"])
+
+
+@torch.no_grad()
+def select_bicubic(manifest, data_dir=DATA_DIR):
+    """Bicubic's `evaluate` scores on the split `fit` chooses the best epoch on: the line a training's history is drawn
+    against (`plot_history`)."""
+    holdout = "select" if "select" in manifest["splits"] else "val"
+    loader = DataLoader(PatchPairs(data_dir, holdout, manifest, augment=False), batch_size=256, shuffle=False)
+    return evaluate(models.Resize(manifest["scale"]).to(DEVICE), loader, trimmer(manifest))
+
+
+# --- The final scores: every notebook's models on the validation split, the same way, so they can be set side by side
+
+SCORES_DIR = DATA_DIR / "scores"   # each model's per-patch validation scores, kept by `record`
+BOOTSTRAP = 2000
+
+
+@torch.no_grad()
+def val_scores(upscale, manifest, data_dir=DATA_DIR, batch_size=256):
+    """SSIM-Y, and luma and chroma PSNR (`metrics.per_image`), of every validation patch's core: the score every
+    notebook reports.
+
+    `upscale(lr, condition)` takes LR patches (N, 3, h, w) in [0, 1] on DEVICE and their conditions (N, 5, 1, 1)
+    (`patches.conditions`; a blind model ignores them) and returns the HR picture with its halo, which is cut off.
+    Returns {"ssim", "y", "u", "v"}, one value a patch."""
+    lr, hr = patches.load(data_dir, "val", manifest)
+    condition = torch.from_numpy(patches.conditions(data_dir, "val", manifest))[:, :, None, None]
+    pixels = manifest["halo"] * manifest["scale"]
+    parts = []
+    for first in range(0, len(lr), batch_size):
+        batch = slice(first, first + batch_size)
+        x = torch.from_numpy(lr[batch]).to(DEVICE).permute(0, 3, 1, 2).float() / 255
+        target = torch.from_numpy(hr[batch]).to(DEVICE).permute(0, 3, 1, 2).float() / 255
+        prediction = patches.trim(upscale(x, condition[batch].to(DEVICE)), pixels)
+        parts.append({key: value.cpu().numpy() for key, value in metrics.per_image(prediction, target).items()})
+    return {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
+
+
+def bicubic_scores(manifest, data_dir=DATA_DIR):
+    """`val_scores` of `models.bicubic`, the skip every model is built on: what each gain is measured against."""
+    return val_scores(lambda lr, condition: models.bicubic(lr, manifest["scale"]), manifest, data_dir)
+
+
+def record(notebook, name, scores):
+    """Keep a model's `val_scores` in `SCORES_DIR`, where notebook 29 sets every notebook's results side by side."""
+    SCORES_DIR.mkdir(parents=True, exist_ok=True)
+    np.savez(SCORES_DIR / f"{notebook:02d} {name}.npz", **scores)
+
+
+def recorded():
+    """Every recorded model: {(notebook, name): its `val_scores`}."""
+    found = {}
+    for path in sorted(SCORES_DIR.glob("*.npz")):
+        notebook, name = path.stem.split(" ", 1)
+        with np.load(path) as scores:
+            found[int(notebook), name] = {key: scores[key] for key in scores.files}
+    return found
+
+
+def _val_labels(manifest, data_dir):
+    files = manifest["splits"]["val"]
+    labels = {name: np.load(Path(data_dir) / files[name]) for name in ("qp", "encoder", "kind")}
+    source = np.zeros(len(labels["qp"]), np.int32)
+    keys = {}
+    for entry in files["sources"]:
+        first, end = entry["patches"]
+        source[first:end] = keys.setdefault(entry["key"], len(keys))
+    labels["source"] = source
+    return labels
+
+
+def gain_range(gain, source, seed=0):
+    """95% range of a mean gain over patches, from a bootstrap over their sources (the patches of one source move
+    together, so they are resampled together)."""
+    count = np.bincount(source)
+    total = np.bincount(source, weights=gain)
+    draws = np.random.default_rng(seed).multinomial(len(count), np.full(len(count), 1 / len(count)), size=BOOTSTRAP)
+    return np.quantile((draws @ total) / (draws @ count), [0.025, 0.975])
+
+
+def compare(results, manifest, data_dir=DATA_DIR, base=None, base_name="bicubic"):
+    """A table of `results` ({name: `val_scores`}), best first: SSIM-Y, its gain over bicubic (or `base`'s scores,
+    called `base_name`) with a 95% range, luma PSNR and its gain, chroma PSNR's gain (where both have it), and the
+    SSIM-Y gain by kind and by encoder line."""
+    import pandas as pd
+    base = bicubic_scores(manifest, data_dir) if base is None else base
+    labels = _val_labels(manifest, data_dir)
+    kinds = np.array(manifest["kinds"])[labels["kind"]]
+    lines = np.array(manifest["encoders"])[labels["encoder"]]
+
+    def capped(scores):   # scores recorded before `metrics.PSNR_CEILING` was set stop at it too
+        return {key: np.minimum(value, metrics.PSNR_CEILING) if key in "yuv" else value
+                for key, value in scores.items()}
+
+    base = capped(base)
+    rows = []
+    for name, scores in results.items():
+        scores = capped(scores)
+        gain = scores["ssim"] - base["ssim"]
+        low, high = gain_range(gain, labels["source"])
+        row = {"model": name, "SSIM-Y": scores["ssim"].mean(), f"over {base_name}": gain.mean(),
+               "95% range": f"{low:+.4f} to {high:+.4f}", "luma dB": scores["y"].mean(),
+               "dB over": (scores["y"] - base["y"]).mean()}
+        if "u" in scores and "u" in base:   # the mean of U and V's PSNR, against the base's
+            row["chroma dB over"] = ((scores["u"] + scores["v"]) / 2 - (base["u"] + base["v"]) / 2).mean()
+        row.update({kind: gain[kinds == kind].mean() for kind in manifest["kinds"]})
+        row.update({line: gain[lines == line].mean() for line in manifest["encoders"]})
+        rows.append(row)
+    return pd.DataFrame(rows).sort_values("SSIM-Y", ascending=False).reset_index(drop=True)
+
+
+def gain_by_qp(results, manifest, data_dir=DATA_DIR, base=None):
+    """The SSIM-Y gain over bicubic (or `base`) in each slice QP bin of the validation split; the first row counts
+    the patches."""
+    import pandas as pd
+    base = bicubic_scores(manifest, data_dir) if base is None else base
+    edges = manifest.get("qp_edges", (0, 18, 26, 30, 34, 38, 42, 46, 52))
+    qp = _val_labels(manifest, data_dir)["qp"]
+    bins = np.digitize(qp, edges[1:-1])
+    names = [f"{a}-{b}" for a, b in zip(edges[:-1], edges[1:])]
+    rows = [{"model": "patches", **{n: float((bins == i).sum()) for i, n in enumerate(names)}}]
+    for name, scores in results.items():
+        gain = scores["ssim"] - base["ssim"]
+        rows.append({"model": name, **{n: gain[bins == i].mean() for i, n in enumerate(names)}})
+    return pd.DataFrame(rows)
+
+
+def val_screens(manifest, count=4, max_qp=26, data_dir=DATA_DIR):
+    """`count` validation screens below slice QP `max_qp`, spread over the split, as (LR, HR) batches on DEVICE: the
+    patches the notebooks look at, text and window edges the stream left for an upscaler to keep."""
+    files = manifest["splits"]["val"]
+    kind, qp = (np.load(Path(data_dir) / files[name]) for name in ("kind", "qp"))
+    screens = np.flatnonzero((kind == manifest["kinds"].index("screen")) & (qp < max_qp))
+    pairs = PatchPairs(data_dir, "val", manifest, augment=False)
+    picked = [pairs[i] for i in screens[np.linspace(0, len(screens) - 1, count).astype(int)]]
+    return torch.stack([lr for lr, _ in picked]).to(DEVICE), torch.stack([hr for _, hr in picked]).to(DEVICE)
+
+
+def show(table):
+    """Print a `compare` or `gain_by_qp` table: SSIM-Y to four places and its gains signed, decibels to two places
+    and their gains signed, counts whole."""
+    import pandas as pd
+
+    def number(column):
+        if "dB" in column:   # decibels: a gain signed
+            return (lambda v: f"{v:.2f}") if column == "luma dB" else (lambda v: f"{v:+.2f}")
+        if column == "SSIM-Y":
+            return lambda v: f"{v:.4f}"
+        return lambda v: f"{v:.0f}" if abs(v) >= 1 else f"{v:+.4f}"   # an SSIM gain, or gain_by_qp's patch count
+
+    floats = [c for c in table.columns if table[c].dtype.kind == "f"]
+    with pd.option_context("display.width", 200, "display.max_columns", 50):
+        print(table.to_string(index=False, formatters={c: number(c) for c in floats}))
 
 
 def copy_weights(model):
@@ -122,14 +330,18 @@ def copy_weights(model):
 
 
 def train_one_epoch(model, loader, trim, loss_fn, optimiser, show_progress=False, teacher=None):
-    """One pass over every training patch. Returns the average loss.
+    """One pass over every training patch. Returns the average loss and how many batches were skipped.
+
+    A batch whose loss or gradient is not finite (a rare batch can overflow the JND loss) is skipped: no
+    step is taken, so it cannot turn the weights into NaN. A run that never meets one trains as before.
 
     With `show_progress`, a Keras-style progress bar is redrawn in place while it runs. With a
     `teacher` (a model that is not trained), the loss is `loss_fn(prediction, target, taught)`,
     where `taught` is the teacher's picture of the same batch.
     """
     model.train()
-    total_loss, seen = 0.0, 0
+    parameters = [p for p in model.parameters() if p.requires_grad]
+    total_loss, seen, skipped = 0.0, 0, 0
     started = shown = time.time()
     for step, (lr_batch, hr_batch) in enumerate(loader, start=1):
         lr_batch, hr_batch = to_device(lr_batch), hr_batch.to(DEVICE)
@@ -142,16 +354,20 @@ def train_one_epoch(model, loader, trim, loss_fn, optimiser, show_progress=False
             loss = loss_fn(prediction, hr_batch, taught)
         optimiser.zero_grad(set_to_none=True)
         loss.backward()
+        grads = [p.grad for p in parameters if p.grad is not None]
+        if not (math.isfinite(loss.item()) and torch.isfinite(torch.nn.utils.get_total_norm(grads))):
+            skipped += 1
+            continue
         optimiser.step()
         total_loss += loss.item() * len(hr_batch)
         seen += len(hr_batch)
 
         # redraw the bar twice a second ("\r" goes back to the start of the line)
-        if show_progress and time.time() - shown > 0.5:
+        if show_progress and time.time() - shown > 0.5 and seen:
             bar = progress_bar(step, len(loader), time.time() - started)
             print(f"\r{bar} - loss: {total_loss / seen:.4f}", end="", flush=True)
             shown = time.time()
-    return total_loss / seen
+    return (total_loss / seen if seen else math.nan), skipped
 
 
 def progress_bar(step, steps, seconds, width=30):
@@ -200,10 +416,13 @@ MIN_IMPROVEMENT = {"ssim": 1e-5}
 
 def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1e-3,
           loss_fn=F.l1_loss, select="wpsnr", patience=6, min_learning_rate=None,
-          min_improvement=None, checkpoint=None, verbose=1, teacher=None):
+          min_improvement=None, checkpoint=None, verbose=1, teacher=None, scorer=None,
+          lower_is_better=False):
     """Train `model` with Adam until it stops getting better, scoring it after every epoch.
 
     How long it trains is not fixed: it follows the `select` score on the validation split.
+    `select` is one of `SCORE_NAMES`, or a score a `scorer` adds (see `evaluate`); with
+    `lower_is_better` a smaller score is the better one (an error, not a quality).
 
     - **Best epoch**: an epoch improves on the best if it beats it by more than
       `min_improvement` (0.001 dB if not given, 0.00001 for SSIM). The best epoch is loaded
@@ -213,7 +432,8 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
     - **Stop when it has converged**: once the learning rate is down to `min_learning_rate`
       (`learning_rate` / 100 if not given) and `patience` more epochs bring no improvement,
       even small steps no longer help, so training stops. `max_epochs` is only a safety
-      limit. Training also stops at once if the loss becomes NaN. If no epoch ever beat the
+      limit. A batch whose loss or gradient is not finite is skipped (counted in the
+      epoch's `skipped`); training stops at once if every batch of an epoch was. If no epoch ever beat the
       untrained model, it warns: the model has learned nothing.
     - **Checkpoint**: with a `checkpoint` path, the whole training is saved there after
       every epoch. Run the same call again and it carries on where it stopped, or, if it had
@@ -232,7 +452,8 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
         min_learning_rate = learning_rate / 100
     if min_improvement is None:
         min_improvement = MIN_IMPROVEMENT.get(select, 0.001)
-    metric = SCORE_NAMES[select]
+    metric = SCORE_NAMES.get(select, f"val_{select}")
+    sign = -1.0 if lower_is_better else 1.0
     model.to(DEVICE)
     optimiser = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=learning_rate)
 
@@ -250,7 +471,7 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
                 print(f"It had finished ({progress['stopped']}), so nothing is trained again - "
                       f"delete the file to train from the start.")
     else:
-        start = evaluate(model, val_loader, trim)[select]
+        start = evaluate(model, val_loader, trim, scorer)[select]
         progress = {"epoch": 0, "history": [], "waited": 0, "stopped": None, "start": start,
                     "seconds": 0.0, "best": {"epoch": 0, "score": start, "state": copy_weights(model)}}
 
@@ -270,17 +491,19 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
 
         epoch_started = time.time()
         rate = optimiser.param_groups[0]["lr"]
-        loss = train_one_epoch(model, train_loader, trim, loss_fn, optimiser, show_progress=verbose == 1,
-                               teacher=teacher)
-        scores = evaluate(model, val_loader, trim)
+        loss, skipped = train_one_epoch(model, train_loader, trim, loss_fn, optimiser, show_progress=verbose == 1,
+                                        teacher=teacher)
+        scores = evaluate(model, val_loader, trim, scorer)
         seconds = time.time() - epoch_started
         scores["loss"] = loss
         scores["learning_rate"] = rate
+        if skipped:
+            scores["skipped"] = skipped   # batches whose loss or gradient was not finite
         progress["history"].append(scores)
         progress["seconds"] += seconds
 
         best_before = progress["best"]["score"]
-        improved = scores[select] > best_before + min_improvement
+        improved = sign * (scores[select] - best_before) > min_improvement
         if improved:
             progress["best"] = {"epoch": epoch, "score": scores[select], "state": copy_weights(model)}
             progress["waited"] = 0
@@ -309,7 +532,9 @@ def train(model, train_loader, val_loader, trim, max_epochs=500, learning_rate=1
             # e.g. "348/348 [==============================] - 9s 26ms/step - loss: 0.0341 -
             #       val_wpsnr: 30.9120 - ... - learning_rate: 1.0e-04"
             steps = len(train_loader)
-            validation = " - ".join(f"{name}: {scores[key]:.4f}" for key, name in SCORE_NAMES.items())
+            names = {**SCORE_NAMES, **{key: f"val_{key}" for key in scores
+                                       if key not in SCORE_NAMES and key not in ("loss", "learning_rate")}}
+            validation = " - ".join(f"{name}: {scores[key]:.4f}" for key, name in names.items())
             over_the_bar = "\r" if verbose == 1 else ""
             print(f"{over_the_bar}{progress_bar(steps, steps, seconds)} - loss: {loss:.4f} - "
                   f"{validation} - learning_rate: {rate:.1e}")
@@ -398,18 +623,21 @@ def print_runs(results, winner, select="wpsnr"):
 
 
 def plot_history(history, baseline, key="wpsnr", loss_name="L1 loss"):
-    """Training loss, validation score against bicubic, and the learning rate, by epoch."""
+    """Training loss, held-out score against bicubic, and the learning rate, by epoch. `history` is one training's, or
+    {name: history} to draw several on the same axes."""
     import matplotlib.pyplot as plt
 
-    epochs = range(1, len(history) + 1)
+    histories = history if isinstance(history, dict) else {"model": history}
     fig, (left, middle, right) = plt.subplots(1, 3, figsize=(14, 3.5))
-    left.plot(epochs, [h["loss"] for h in history])
-    left.set_title(f"training {loss_name}")
-    middle.plot(epochs, [h[key] for h in history], label="model")
+    for name, runs in histories.items():
+        epochs = range(1, len(runs) + 1)
+        left.plot(epochs, [h["loss"] for h in runs], label=name)
+        middle.plot(epochs, [h[key] for h in runs], label=name)
+        right.plot(epochs, [h["learning_rate"] for h in runs], label=name)
     middle.axhline(baseline[key], color="0.5", linestyle="--", label="bicubic")
-    middle.set_title(f"validation {key}" + ("" if key == "ssim" else " (dB)"))
-    middle.legend()
-    right.plot(epochs, [h["learning_rate"] for h in history])
+    left.set_title(f"training {loss_name}")
+    middle.set_title(f"held-out {key}" + ("" if key == "ssim" else " (dB)"))
+    middle.legend(fontsize=8)
     right.set_yscale("log")
     right.set_title("learning rate")
     for ax in (left, middle, right):

@@ -257,6 +257,41 @@ def encode_reports(hr, degradations):
     return out
 
 
+def degrade_many(hr, degradations):
+    """[(LR, bits, report)] of (T, H, W, 3) through each of `degradations`, which share a scale and each have a
+    codec: what `degrade(hr, d, with_frames=True)` returns for each, without the HR (that is `crop(hr)`).
+
+    The same ffmpeg commands as `degrade`, but every one reads and writes files in memory rather than pipes, as in
+    `encode_reports`: a clip piped through `degrade` holds the GIL for most of its time, so threads running it at
+    once go slower than one. Each stream is downscaled on its own, in the encoder's process, as `degrade` does it:
+    NVENC fed the same 4:2:0 frames from a file codes them differently."""
+    scale = degradations[0].scale
+    if any(d.scale != scale or d.bpp is None for d in degradations):
+        raise ValueError("degrade_many takes one scale, and a codec for each degradation")
+    frames = crop(np.asarray(hr, dtype=np.uint8), scale)
+    count, height, width = frames.shape[:3]
+    lr_width, lr_height = stream_size(width, height, scale)
+    # in memory where there is a RAM disk: this is hundreds of MB, written once and read by every stream
+    with tempfile.TemporaryDirectory(dir="/dev/shm" if os.path.isdir("/dev/shm") else None) as folder:
+        rgb, h264, decoded = (os.path.join(folder, name) for name in ("rgb", "h264", "decoded"))
+        frames.tofile(rgb)
+        out = []
+        for d in degradations:
+            flags = _encoder(lr_width, lr_height, d)
+            encoded = run_ffmpeg([*_raw_input(width, height, d.fps)[:-1], rgb, "-vf", _downscale(lr_width, lr_height, d.filter),
+                                  *flags[:-2], "-bsf:v", "trace_headers", *flags[-2:]], loglevel="debug")
+            with open(h264, "wb") as file:
+                file.write(encoded.stdout)
+            # passthrough: exactly one frame out per frame in
+            subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "h264", "-i", h264, "-vf", FROM_YUV,
+                            "-fps_mode", "passthrough", "-f", "rawvideo", decoded], check=True, capture_output=True)
+            lr = np.fromfile(decoded, dtype=np.uint8).reshape(-1, lr_height, lr_width, 3)
+            if len(lr) != count:
+                raise RuntimeError(f"ffmpeg returned {len(lr)} frames for {count}")
+            out.append((lr, 8 * len(encoded.stdout), _report(encoded.stderr, count, d, lr_width, lr_height)))
+    return out
+
+
 def degrade(hr, degradation=Degradation(), with_bits=False, with_frames=False):
     """Return (HR, LR): HR is `hr` cropped, LR is what the stream turns it into. With
     `with_bits`, (HR, LR, bits): the size of the H.264 stream it was sent as (0 with no codec).
